@@ -101,3 +101,4 @@ if __name__ == '__main__':
     prediction = model(test_input)
     print(prediction)
 
+    torch.cuda.empty_cache()
