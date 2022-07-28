@@ -1,19 +1,35 @@
-import os
-import torch
-import random
-import argparse
-import numpy as np
 from torch.utils.data import Dataset, DataLoader
+from termcolor import cprint
+import numpy as np
+import argparse
+import random
+import torch
+import time
+import os
 
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'                   # Set the environement variable CUBLAS_WORKSPACE_CONFIG to ':4096:8' for the use of deterministic algorithms in convolution layers
 
 
-class IMUDataset(Dataset):
-    def __init__(self, df, seq_length):
-        self.seq_length = seq_length
-        self.features = df['', '']
+# #### - Decorator - #### #
+def timming(function):
+    def wrapper(*args, **kwargs):
+        start = time.time_ns()
+
+        result = function(*args, **kwargs)
+
+        end = time.time_ns()
+        dt = end - start
+        c = 0
+        unit = ['ns', 'µs', 'ms', 's']
+        while dt > 1000:
+            dt = round(dt/1000, 3)
+            c += 1
+        cprint(f"Function: {function.__name__}; Execution time: {dt} {unit[c]}", 'grey')
+        return result
+    return wrapper
 
 
+# #### - Class - #### #
 class RMSELoss(torch.nn.Module):
     def __init__(self):
         super(RMSELoss, self).__init__()
@@ -25,7 +41,7 @@ class RMSELoss(torch.nn.Module):
 
 
 class CNN(torch.nn.Module):
-
+    @timming
     def __init__(self, seq_length):
         super(CNN, self).__init__()
 
@@ -56,12 +72,14 @@ class CNN(torch.nn.Module):
         # torch.nn.init.kaiming_normal_(self.layers[4].weight)
         # torch.nn.init.kaiming_normal_(self.layers[9].weight)
 
+    @timming
     def forward(self, x):
         out = self.layers(x)
         return out
 
 
 if __name__ == '__main__':
+    start_time = time.time()
 
     random_seed = 34                                                # set random seed
     torch.backends.cudnn.enable = False                             # Disable cuDNN use of nondeterministic algorithms
@@ -97,8 +115,10 @@ if __name__ == '__main__':
     model.name = 'CNN'
 
     # test the model and fixe seed generation
-    test_input = torch.rand((1, 6, 50)).to(DEVICE)
+    test_input = torch.rand((1, 6, 500000)).to(DEVICE)
     prediction = model(test_input)
     print(prediction)
+
+    print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
     torch.cuda.empty_cache()
