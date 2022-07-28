@@ -1,9 +1,12 @@
 from torch.utils.data import Dataset, DataLoader
 from termcolor import cprint
+from tqdm import tqdm
+import pandas as pd
 import numpy as np
 import argparse
 import random
 import torch
+import h5py
 import time
 import os
 
@@ -78,6 +81,65 @@ class CNN(torch.nn.Module):
         return out
 
 
+def make_trainning(model, EPOCHS):
+    # #### - Train - #### #
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    batch_bar = tqdm(total=len(train)//BATCH_SIZE, unit="batch", desc="Training", leave=False)
+    epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
+
+    train_loss_history = []
+    val_loss_history = []
+
+    for epoch in range(EPOCHS):
+        train_running_loss = 0.
+
+        model.train()                                               # Make sure gradient tracking is on, and do a pass over the data
+
+        batch_bar.reset()
+
+        for batch_index, (inputs, ground_truth) in enumerate(train_loader):
+            inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
+
+            # Ajouter la normalisation de l'input
+            z_cov = model.forward(inputs)
+            iekf_out = []  # run l'IEKF
+
+            loss = criterion(iekf_out, ground_truth)  # compute loss
+            loss.backward()  # Calculate gradients
+            optimizer.step()  # Adjust learning weights
+
+            train_running_loss += loss.item()
+
+            batch_bar.set_postfix(train_loss=train_running_loss/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
+            batch_bar.update()
+        train_loss = train_running_loss / batch_index
+        train_loss_history.append(train_loss)
+
+        # #### - Validation - #### #
+        val_running_loss = 0.
+        model.eval()
+
+        with torch.no_grad():
+            for batch_index, (inputs, ground_truth) in enumerate(val_loader):
+                inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
+
+                # Ajouter la normalisation de l'input
+                z_cov = model.forward(inputs)
+                iekf_out = []  # run l'IEKF
+
+                loss = criterion(iekf_out, ground_truth)  # compute loss
+
+                val_running_loss += loss.item()
+            val_loss = val_running_loss / batch_index
+            val_loss_history.append(val_loss)
+
+        epoch_bar.set_postfix(train_loss=train_loss, val_loss=val_loss, lr=optimizer.param_groups[0]['lr'])
+        epoch_bar.update()
+    return train_loss_history, val_loss_history
+
+
+# #### - Main - #### #
 if __name__ == '__main__':
     start_time = time.time()
 
