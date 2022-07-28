@@ -42,6 +42,34 @@ def create_folder(directory):
 
 # #### - Class - #### #
 class BaseDataset:
+    fields = ["lat", "lon", "alt", "roll", "pitch", "yaw", "vn", "ve", "vf", "vl", "vu", "ax", "ay", "az", "af",
+              "al", "au", "wx", "wy", "wz", "wf", "wl", "wu", "pos_accuracy", "vel_accuracy", "navstat",
+              "numsats", "posemode", "velmode", "orimode"]
+
+    dataset_split = {'train': ["2011_09_30_drive_0018_extract",
+                               "2011_09_30_drive_0020_extract",
+                               "2011_09_30_drive_0027_extract",
+                               "2011_09_30_drive_0033_extract",
+                               "2011_09_30_drive_0034_extract",
+                               "2011_10_03_drive_0027_extract",
+                               "2011_10_03_drive_0034_extract",
+                               "2011_10_03_drive_0042_extract"],
+
+                     'validation': ["2011_09_30_drive_0028_extract"],
+
+                     'test': ["2011_09_26_drive_0067_extract",
+                              "2011_09_30_drive_0016_extract",
+                              "2011_09_30_drive_0018_extract",
+                              "2011_09_30_drive_0020_extract",
+                              "2011_09_30_drive_0027_extract",
+                              "2011_09_30_drive_0028_extract",
+                              "2011_09_30_drive_0033_extract",
+                              "2011_09_30_drive_0034_extract",
+                              "2011_10_03_drive_0027_extract",
+                              "2011_10_03_drive_0034_extract",
+                              "2011_10_03_drive_0042_extract"]
+                     }
+
     @timming
     def __init__(self, raw_data_path, processed_data_path,
                  maximum_sample_loose=150, minimum_sequence_length=6000):
@@ -61,10 +89,6 @@ class BaseDataset:
 
         if os.path.exists(os.path.join(self.process_data_path, self.h5_name)):
             os.remove(os.path.join(self.process_data_path, self.h5_name))
-
-        self.fields = ["lat", "lon", "alt", "roll", "pitch", "yaw", "vn", "ve", "vf", "vl", "vu", "ax", "ay", "az", "af",
-                       "al", "au", "wx", "wy", "wz", "wf", "wl", "wu", "pos_accuracy", "vel_accuracy", "navstat",
-                       "numsats", "posemode", "velmode", "orimode"]
 
         print(f"Runs data processing function to turn raw data from ({self.raw_data_path}) into cleaned data ready to "
               f"be analyzed (saved in {self.process_data_path})")
@@ -158,10 +182,21 @@ class BaseDataset:
                 w_a_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()                                           # DataFrame containing the input for the training, [gyro, accel]
                 gt_df = pd.DataFrame(pos_gt, columns=['x', 'y', 'z'])                                                   # DataFrame containing the ground truth
 
-                dataset.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'day_{date_dir}/{date_dir2[11:]}/dataset')  # Save the dataset in a .h5 file
-                time_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'day_{date_dir}/{date_dir2[11:]}/time')  # Save the input training data in a .h5 file
-                w_a_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'day_{date_dir}/{date_dir2[11:]}/w_a_input')  # Save the input training data in a .h5 file
-                gt_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'day_{date_dir}/{date_dir2[11:]}/ground_truth')  # Save the ground truth data in a .h5 file
+                if date_dir2 in self.dataset_split['train']:
+                    dataset.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'train/day_{date_dir2}/dataset')  # Save the dataset in a .h5 file
+                    time_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'train/day_{date_dir2}/time')  # Save the input training data in a .h5 file
+                    w_a_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'train/day_{date_dir2}/w_a_input')  # Save the input training data in a .h5 file
+                    gt_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'train/day_{date_dir2}/ground_truth')  # Save the ground truth data in a .h5 file
+                if date_dir2 in self.dataset_split['validation']:
+                    dataset.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'validation/day_{date_dir2}/dataset')  # Save the dataset in a .h5 file
+                    time_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'validation/day_{date_dir2}/time')  # Save the input training data in a .h5 file
+                    w_a_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'validation/day_{date_dir2}/w_a_input')  # Save the input training data in a .h5 file
+                    gt_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'validation/day_{date_dir2}/ground_truth')  # Save the ground truth data in a .h5 file
+                if date_dir2 in self.dataset_split['test']:
+                    dataset.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'test/day_{date_dir2}/dataset')  # Save the dataset in a .h5 file
+                    time_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'test/day_{date_dir2}/time')  # Save the input training data in a .h5 file
+                    w_a_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'test/day_{date_dir2}/w_a_input')  # Save the input training data in a .h5 file
+                    gt_df.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'test/day_{date_dir2}/ground_truth')  # Save the ground truth data in a .h5 file
         print(f"\n\nInitial dataset duration: {round(self.raw_total_duration/100, 2)} s\n"
               f"Selected portion total duration: {round(self.process_total_duration/100, 2)} s\n"
               f"Propotion keep: {round(100*(self.process_total_duration/self.raw_total_duration), 2)} %\n")
