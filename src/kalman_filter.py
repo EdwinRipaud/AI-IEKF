@@ -314,10 +314,10 @@ if __name__ == '__main__':
     print(seq_df_key)
 
     # Load dataframes
-    dataset = pd.read_hdf(save_path, "day_2011_09_30/drive_0020_extract/dataset")   # Get the input DataFrame for the given date and drive
-    u_df = pd.read_hdf(save_path, "day_2011_09_30/drive_0020_extract/w_a_input")    # Get the input DataFrame for the given date and drive
-    time_df = pd.read_hdf(save_path, "day_2011_09_30/drive_0020_extract/time")      # Get the time vector DataFrame for the given date and drive
-    ground_truth = pd.read_hdf(save_path, "day_2011_09_30/drive_0020_extract/ground_truth")      # Get the time vector DataFrame for the given date and drive
+    dataset = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/dataset")   # Get the input DataFrame for the given date and drive
+    u_df = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/w_a_input")    # Get the input DataFrame for the given date and drive
+    time_df = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/time")      # Get the time vector DataFrame for the given date and drive
+    ground_truth = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/ground_truth")      # Get the time vector DataFrame for the given date and drive
     X_gt = ground_truth[['x']].values
     Y_gt = ground_truth[['y']].values
 
