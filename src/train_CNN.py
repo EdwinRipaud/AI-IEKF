@@ -33,6 +33,70 @@ def timming(function):
 
 
 # #### - Class - #### #
+class KittiDataset(Dataset):
+    def __init__(self, hdf_path, seq_length, split):
+        self.hdf_path = hdf_path
+        self.seq_length = seq_length
+        self.hdf = h5py.File(self.hdf_path, 'r')                    # Read the .h5 file
+        self.split = split
+
+        self.init = pd.DataFrame()
+        self.time = pd.DataFrame()
+        self.U = pd.DataFrame()
+        self.GT = pd.DataFrame()
+
+        self.h5_to_df()
+
+    def __getitem__(self, item):
+        v_mes0 = self.init.loc[["ve", "vn", "vu"], item].values
+        ang0 = self.init.loc[["roll", "pitch", "yaw"], item].values
+        time = self.time.loc[:, item]
+        time_t = time[~time['time'].isna()].to_numpy()
+        U = self.U.loc[:, item]
+        U_t = torch.tensor(U[~U['ax'].isna()].to_numpy(), dtype=torch.float32)
+        GT = self.GT.loc[:, item]
+        GT_t = torch.tensor(GT[~GT['x'].isna()].to_numpy(), dtype=torch.float32)
+        return (v_mes0, ang0), time_t, U_t, GT_t
+
+    def __len__(self):
+        return len(list(self.hdf.get(self.split)))
+
+    def __iter__(self):
+        seqs = self.hdf.get(self.split)
+        for i in list(seqs.keys()):
+            print(i)
+            yield i, self[i]
+
+    def h5_to_df(self):
+        seqs = self.hdf.get(self.split)
+        # print(f"Train:\n\t{list(seqs.keys())}")
+        dict_u = {}
+        dict_gt = {}
+        dict_time = {}
+        dict_init = {}
+        for i in list(seqs.keys()):
+            # get initial condictions
+            init_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/dataset").loc[:, ["ve", "vn", "vu", "roll", "pitch", "yaw"]].iloc[0, :]
+            dict_init[f"{i}"] = pd.Series(init_df)  # Add the DataFrame to the dictionary
+
+            # get time vector
+            time_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/time")
+            dict_time[f"{i}"] = pd.DataFrame(time_df)  # Add the DataFrame to the dictionary
+
+            # get IMU measurment + time
+            u_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/w_a_input")  # Get the input DataFrame for the given date and drive
+            dict_u[f"{i}"] = pd.DataFrame(u_df)  # Add the DataFrame to the dictionary
+
+            # get Ground_Truth
+            gt_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/ground_truth")  # Get the input DataFrame for the given date and drive
+            dict_gt[f"{i}"] = pd.DataFrame(gt_df)  # Add the DataFrame to the dictionary
+
+        self.init = pd.concat(dict_init, axis=1)  # Create DataFrame from dictionary, with index as dict keys
+        self.time = pd.concat(dict_time, axis=1)  # Create DataFrame from dictionary, with index as dict keys
+        self.U = pd.concat(dict_u, axis=1)  # Create DataFrame from dictionary, with index as dict keys
+        self.GT = pd.concat(dict_gt, axis=1)  # Create DataFrame from dictionary, with index as dict keys
+
+
 class RMSELoss(torch.nn.Module):
     def __init__(self):
         super(RMSELoss, self).__init__()
@@ -157,9 +221,9 @@ if __name__ == '__main__':
     parser.add_argument(
         "-e", "--epochs", type=int, required=True, help="Number of epochs to train the model. Ex: --epochs 400"
     )
-    parser.add_argument(
-        "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 64"
-    )
+    # parser.add_argument(
+    #     "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 64"
+    # )
     parser.add_argument(
         "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
     )
@@ -171,7 +235,9 @@ if __name__ == '__main__':
     DEVICE = args.device
     SEQ_LEN = args.seq
 
-    print(f"Epochs: {EPOCHS}; Batch size: {BATCH_SIZE}; Device: {DEVICE}; Sequence length: {SEQ_LEN}")
+    print(f"Epochs: {EPOCHS}; Device: {DEVICE}; Sequence length: {SEQ_LEN}")
+
+    save_path = "../data/processed/dataset.h5"                      # Path to the .h5 dataset
 
     model = CNN(SEQ_LEN).to(DEVICE)
     model.name = 'CNN'
