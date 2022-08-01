@@ -1,4 +1,5 @@
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
+from kalman_filter import IEKF
 from termcolor import cprint
 from tqdm import tqdm
 import pandas as pd
@@ -9,6 +10,7 @@ import torch
 import h5py
 import time
 import os
+
 
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'                   # Set the environement variable CUBLAS_WORKSPACE_CONFIG to ':4096:8' for the use of deterministic algorithms in convolution layers
 
@@ -30,6 +32,14 @@ def timming(function):
         cprint(f"Function: {function.__name__}; Execution time: {dt} {unit[c]}", 'grey')
         return result
     return wrapper
+
+
+# #### - Functions - #### #
+def normalize(u):
+    std = u.std(0, unbiased=True)
+    mean = u.mean(0)
+    u_norm = (u-mean)/std
+    return u_norm
 
 
 # #### - Class - #### #
@@ -146,32 +156,39 @@ class CNN(torch.nn.Module):
 
 
 def make_trainning(model, EPOCHS):
+    # #### - Kalman Filter - #### #
+    iekf = IEKF()
+
     # #### - Train - #### #
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    batch_bar = tqdm(total=len(train)//BATCH_SIZE, unit="batch", desc="Training", leave=False)
+    batch_bar = tqdm(total=len(train), unit="batch", desc="Training", leave=False)
     epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
 
     train_loss_history = []
     val_loss_history = []
 
     for epoch in range(EPOCHS):
+        cprint("Générer les sous-séquences aléatoires", 'red')
         train_running_loss = 0.
 
         model.train()                                               # Make sure gradient tracking is on, and do a pass over the data
 
         batch_bar.reset()
 
-        for batch_index, (inputs, ground_truth) in enumerate(train_loader):
-            inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
+        for batch_index, (seq_name, (init_cond, t, inputs, ground_truth)) in enumerate(train):
+            print(batch_index, seq_name)
+            print(init_cond, t.shape, inputs.shape, ground_truth.shape)
+            inputs_net, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
 
-            # Ajouter la normalisation de l'input
-            z_cov = model.forward(inputs)
-            iekf_out = []  # run l'IEKF
+            input_net_norm = normalize(inputs_net)                  # Normalize inputs
+            z_cov_net = model.forward(inputs_net)
+            z_cov = z_cov_net.to('cpu')                             # Move the CNN result to 'cpu' for Kalman Filter iterations
+            Rot, p = iekf.train_run(time, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter
 
             loss = criterion(iekf_out, ground_truth)  # compute loss
-            loss.backward()  # Calculate gradients
-            optimizer.step()  # Adjust learning weights
+            loss.backward()                                         # Calculate gradients
+            optimizer.step()                                        # Adjust learning weights
 
             train_running_loss += loss.item()
 
@@ -185,14 +202,14 @@ def make_trainning(model, EPOCHS):
         model.eval()
 
         with torch.no_grad():
-            for batch_index, (inputs, ground_truth) in enumerate(val_loader):
+            for batch_index, (inputs, ground_truth) in enumerate(validation):
                 inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
 
                 # Ajouter la normalisation de l'input
                 z_cov = model.forward(inputs)
                 iekf_out = []  # run l'IEKF
 
-                loss = criterion(iekf_out, ground_truth)  # compute loss
+                loss = criterion(iekf_out, ground_truth)            # compute loss
 
                 val_running_loss += loss.item()
             val_loss = val_running_loss / batch_index
@@ -231,7 +248,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     EPOCHS = args.epochs
-    BATCH_SIZE = args.batch
     DEVICE = args.device
     SEQ_LEN = args.seq
 
@@ -239,13 +255,18 @@ if __name__ == '__main__':
 
     save_path = "../data/processed/dataset.h5"                      # Path to the .h5 dataset
 
-    model = CNN(SEQ_LEN).to(DEVICE)
-    model.name = 'CNN'
+    train = KittiDataset(save_path, SEQ_LEN, 'train')
+    validation = KittiDataset(save_path, SEQ_LEN, 'validation')
 
-    # test the model and fixe seed generation
-    test_input = torch.rand((1, 6, 500000)).to(DEVICE)
-    prediction = model(test_input)
-    print(prediction)
+    _, _, u, _ = train['day_2011_10_03_drive_0042_extract']
+    normalize(u)
+
+    # Model
+    model = CNN(SEQ_LEN).to(DEVICE)
+    # Loss
+    criterion = torch.nn.MSELoss()
+
+    train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
