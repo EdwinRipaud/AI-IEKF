@@ -128,6 +128,33 @@ class IEKF:
                 Rot_c_i[i] = self.normalize_rot(Rot_c_i[i])
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
 
+    def train_run(self, t, u, z_covs, v_mes0, ang0):
+        """
+        Run IEKF algorithm on input sequence
+        :param t: time vector
+        :param u: input measurement, u = [ax, ay, az, wx, wy, wz]
+        :param z_covs: pseudo-measure covariance, [cov_v_lat, cov_v_up]
+        :param v_mes0: initial velocity
+        :param ang0: initial orientation
+        :return:
+        """
+        dt = t[1:] - t[:-1]                                                                                             # Set the delta time vector, that contain the delta of time for each sample
+        N = u.shape[0]                                                                                                  # Sequence length
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_mes0, ang0, N)                                   # Initialise the states variables with initial condictions
+        measurements_covs = self.z_to_cov(z_covs)
+
+        for i in range(1, N):
+            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.propagate(Rot[i-1], v[i-1], p[i-1], b_omega[i-1], b_acc[i-1], Rot_c_i[i-1], t_c_i[i-1], P, u[i], dt[i-1])
+
+            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.update(Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P, u[i], measurements_covs[i])
+            # correct numerical error every second
+            if i % self.n_normalize_rot == 0:
+                Rot[i] = self.normalize_rot(Rot[i])
+            # correct numerical error every 10 seconds
+            if i % self.n_normalize_rot_c_i == 0:
+                Rot_c_i[i] = self.normalize_rot(Rot_c_i[i])
+        return Rot, p
+
     def init_run(self, v_mes0, ang0, N):
         Rot = np.zeros((N, 3, 3))                               # Rotation matrix (orientation) in car-frame
         v = np.zeros((N, 3))                                    # Velocity vector
@@ -153,6 +180,12 @@ class IEKF:
         P[15:18, 15:18] = self.cov_Rot_c_i0 * self.Id3          # Set initial rotation car to IMU frame covariance
         P[18:21, 18:21] = self.cov_t_c_i0 * self.Id3            # Set initial translation car to IMU frame covariance
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
+
+    def z_to_cov(self, z):
+        cov = np.asarray(z).copy()
+        cov[:, 0] = self.var_lat**2 * 10**(self.beta_lat*z[:, 0])
+        cov[:, 1] = self.var_up**2 * 10**(self.beta_up*z[:, 1])
+        return cov
 
     def propagate(self, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, Rot_c_i_prev, t_c_i_prev, P_prev, u, dt):
         # Propagate the state with the non-linear equations
