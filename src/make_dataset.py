@@ -72,11 +72,11 @@ class BaseDataset:
 
     @timming
     def __init__(self, raw_data_path, processed_data_path,
-                 maximum_sample_loose=150, minimum_sequence_length=6000):
+                 maximum_sample_loss=150, minimum_sequence_length=6000):
         super(BaseDataset, self).__init__()
 
         self.min_seq_len = minimum_sequence_length
-        self.maximum_sample_loose = maximum_sample_loose
+        self.maximum_sample_loss = maximum_sample_loss
         self.frequency = 100  # sampling frequency
 
         self.raw_total_duration = 0
@@ -146,8 +146,8 @@ class BaseDataset:
                     cprint("\tSequence has negative time step values", 'red')
 
                 # Some sequences have sampling frequency outage
-                if np.max(np.diff(dataset['time'].to_numpy())) > (self.maximum_sample_loose / self.frequency):
-                    cprint(f"\tSequence has time jumps > {self.maximum_sample_loose / self.frequency} s", 'blue')
+                if np.max(np.diff(dataset['time'].to_numpy())) > (self.maximum_sample_loss / self.frequency):
+                    cprint(f"\tSequence has time jumps > {self.maximum_sample_loss / self.frequency} s", 'blue')
                     dataset = self.select_clear(dataset)                                                                # if there is big jump in time, we selecte the largest periode where the sampling time is within the acceptable range
 
                 seq_process_duration = dataset['time'].shape[0]
@@ -165,6 +165,7 @@ class BaseDataset:
                 Note on difference between ground truth and oxts solution:
                     - orientation is the same
                     - north and east axis are inverted
+                    - z axes are opposed
                     - position are closed to but different
                 => oxts solution is not loaded
                 """
@@ -233,7 +234,7 @@ class BaseDataset:
         print("\tSelect clean portion")
         t = df['time']
         diff_t = np.diff(t)
-        diff_idx = np.where(diff_t > (self.maximum_sample_loose / self.frequency))[0]
+        diff_idx = np.where(diff_t > (self.maximum_sample_loss / self.frequency))[0]
         diff_idx = np.insert(diff_idx, 0, 0, axis=0)
         diff_idx = np.append(diff_idx, len(diff_t))
         argmax_diff_idx = np.argmax(np.diff(diff_idx))
@@ -326,8 +327,8 @@ if __name__ == '__main__':
 
     path_raw_data = "../data/raw"
     path_processed_data = "../data/processed"
-    kitti_dataset = BaseDataset(path_raw_data, path_processed_data, maximum_sample_loose=15)
-    kitti_dataset.load_data_files(bypass_date='2011_09_30', bypass_drive='2011_09_30_drive_0020_extract')
+    kitti_dataset = BaseDataset(path_raw_data, path_processed_data, maximum_sample_loss=15)
+    kitti_dataset.load_data_files()  # bypass_date='2011_09_30', bypass_drive='2011_09_30_drive_0020_extract')
 
     cprint(f"AJOUTER LA PROPORTION DE LONGUEUR GARDÉE", 'red')
 
