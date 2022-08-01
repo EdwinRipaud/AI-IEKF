@@ -48,9 +48,9 @@ class Parameters:
 
     P_dim = 21                      # covariance dimension
 
+    # Process noise covariance
     Q_dim = 18                      # process noise covariance dimension
 
-    # Process noise covariance
     cov_omega = 1e-3                # gyro covariance
     cov_acc = 1e-2                  # accelerometer covariance
     cov_b_omega = 6e-9              # gyro bias covariance
@@ -58,9 +58,13 @@ class Parameters:
     cov_Rot_c_i = 1e-9              # car to IMU orientation covariance
     cov_t_c_i = 1e-9                # car to IMU translation covariance
 
-    cov_lat = 0.2                   # Zero lateral velocity covariance
-    cov_up = 300                    # Zero upward velocity covariance
+    # Pseudo-measurment covariance
+    var_lat = 0.2                 # Zero lateral velocity variance
+    beta_lat = 3                    # scale factor var_lat for covariance
+    var_up = 300                  # Zero upward velocity variance
+    beta_up = 3                     # scale factor var_up for covariance
 
+    # State covariance
     cov_Rot0 = 1e-3                 # initial pitch and roll covariance
     cov_b_omega0 = 6e-3             # initial gyro bias covariance
     cov_b_acc0 = 4e-3               # initial accelerometer bias covariance
@@ -89,26 +93,28 @@ class IEKF:
         # for key, val in self.__dict__.items():
         #     print(key, type(val))
 
-        self.Q = np.diag([self.cov_omega,       self.cov_omega,     self. cov_omega,                                              # Set the state noise matix
+        self.Q = np.diag([self.cov_omega,       self.cov_omega,     self. cov_omega,                                    # Set the state noise matix
                           self.cov_acc,         self.cov_acc,       self.cov_acc,
                           self.cov_b_omega,     self.cov_b_omega,   self.cov_b_omega,
                           self.cov_b_acc,       self.cov_b_acc,     self.cov_b_acc,
                           self.cov_Rot_c_i,     self.cov_Rot_c_i,   self.cov_Rot_c_i,
                           self.cov_t_c_i,       self.cov_t_c_i,     self.cov_t_c_i])
 
-    def run(self, t, u, measurements_covs, v_mes0, ang0):
+    @timming
+    def run(self, t, u, z_covs, v_0, ang0):
         """
         Run IEKF algorithm on input sequence
         :param t: time vector
         :param u: input measurement, u = [ax, ay, az, wx, wy, wz]
-        :param measurements_covs: pseudo-measure covariance, [cov_v_lat, cov_v_up]
-        :param v_mes0: initial velocity
+        :param z_covs: pseudo-measure covariance, [cov_v_lat, cov_v_up]
+        :param v_0: initial velocity
         :param ang0: initial orientation
         :return:
         """
         dt = t[1:] - t[:-1]                                                                                             # Set the delta time vector, that contain the delta of time for each sample
         N = u.shape[0]                                                                                                  # Sequence length
-        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_mes0, ang0, N)                                    # Initialise the states variables with initial condictions
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_0, ang0, N)                                   # Initialise the states variables with initial condictions
+        measurements_covs = self.z_to_cov(z_covs)
 
         for i in range(1, N):
             Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.propagate(Rot[i-1], v[i-1], p[i-1], b_omega[i-1], b_acc[i-1], Rot_c_i[i-1], t_c_i[i-1], P, u[i], dt[i-1])
@@ -313,11 +319,13 @@ if __name__ == '__main__':
     seq_df_key = list(seq_df.keys())                                                      # Get the keys for the the given date
     print(seq_df_key)
 
+    date = "day_2011_09_30_drive_0018_extract"
+
     # Load dataframes
-    dataset = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/dataset")   # Get the input DataFrame for the given date and drive
-    u_df = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/w_a_input")    # Get the input DataFrame for the given date and drive
-    time_df = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/time")      # Get the time vector DataFrame for the given date and drive
-    ground_truth = pd.read_hdf(save_path, "train/day_2011_09_30_drive_0020_extract/ground_truth")      # Get the time vector DataFrame for the given date and drive
+    dataset = pd.read_hdf(save_path, f"train/{date}/dataset")   # Get the input DataFrame for the given date and drive
+    u_df = pd.read_hdf(save_path, f"train/{date}/w_a_input")    # Get the input DataFrame for the given date and drive
+    time_df = pd.read_hdf(save_path, f"train/{date}/time")      # Get the time vector DataFrame for the given date and drive
+    ground_truth = pd.read_hdf(save_path,f"train/{date}/ground_truth")      # Get the time vector DataFrame for the given date and drive
     X_gt = ground_truth[['x']].values
     Y_gt = ground_truth[['y']].values
 
@@ -329,7 +337,7 @@ if __name__ == '__main__':
 
     print(f"Initial conditions:\n\tvelocity: {v_mes0}\n\torientation: {ang0}")
 
-    Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[500, 300]], v_mes0, ang0)
+    Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[1., -0.5]], v_mes0, ang0)
 
     plt.figure()
     plt.plot(X_gt, Y_gt, 'k-')
