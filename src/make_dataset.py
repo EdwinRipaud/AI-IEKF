@@ -1,3 +1,4 @@
+from scipy.spatial.transform import Rotation as scipyRot
 from torch.utils.data.dataset import Dataset
 import matplotlib.pyplot as plt
 from termcolor import cprint
@@ -171,6 +172,14 @@ class BaseDataset:
                 """
                 pos_gt[:, [0, 1]] = pos_gt[:, [1, 0]]                                                                   # Swap X and Y axis as explaine in the commented note
                 pos_gt[:, 2] *= -1
+                gt_df = pd.DataFrame(pos_gt, columns=['x', 'y', 'z'])  # DataFrame containing the ground truth
+
+                Rot_gt = []
+                roll, pitch, yaw = dataset.roll.values, dataset.pitch.values, dataset.yaw.values
+                for i in range(dataset.roll.shape[0]):
+                    rot = scipyRot.from_euler('xyz', [roll[i], pitch[i], yaw[i]])
+                    Rot_gt.append(rot.as_matrix())  # Set initial car orientation
+                gt_df['rot_matrix'] = Rot_gt
 
                 # Compare Martin's methode with the current method, values are identical, so I use my methode which is faster
                 # ang_src, p_src = self.pose_from_oxts_packet(dataset)
@@ -181,7 +190,6 @@ class BaseDataset:
 
                 time_df = dataset[['time']].copy()                                                                      # DataFrame containing the time vector
                 w_a_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()                                           # DataFrame containing the input for the training, [gyro, accel]
-                gt_df = pd.DataFrame(pos_gt, columns=['x', 'y', 'z'])                                                   # DataFrame containing the ground truth
 
                 if date_dir2 in self.dataset_split['train']:
                     dataset.to_hdf(os.path.join(self.process_data_path, self.h5_name), key=f'train/day_{date_dir2}/dataset')  # Save the dataset in a .h5 file
@@ -319,7 +327,7 @@ class BaseDataset:
 if __name__ == '__main__':
     start_time = time.time()
 
-    # warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
     random_seed = 34                                                                                                    # set random seed
     rng = np.random.default_rng(random_seed)                                                                            # Create a RNG with a fixed seed
@@ -328,7 +336,7 @@ if __name__ == '__main__':
     path_raw_data = "../data/raw"
     path_processed_data = "../data/processed"
     kitti_dataset = BaseDataset(path_raw_data, path_processed_data, maximum_sample_loss=15)
-    kitti_dataset.load_data_files()  # bypass_date='2011_09_30', bypass_drive='2011_09_30_drive_0020_extract')
+    kitti_dataset.load_data_files()  # bypass_date='2011_09_30') , bypass_drive='2011_09_30_drive_0020_extract')
 
     cprint(f"AJOUTER LA PROPORTION DE LONGUEUR GARDÉE", 'red')
 
