@@ -105,7 +105,9 @@ def precompute_lost(Rot, p, list_rpe, N0):
 
 # #### - Class - #### #
 class KittiDataset(Dataset):
-    def __init__(self, hdf_path, seq_length, split):
+    def __init__(self, hdf_path, seq_length, split, rng):
+        self.rng = rng                                              # Set a Random Number Generator
+
         self.hdf_path = hdf_path
         self.seq_length = seq_length
         self.hdf = h5py.File(self.hdf_path, 'r')                    # Read the .h5 file
@@ -115,28 +117,35 @@ class KittiDataset(Dataset):
         self.time = pd.DataFrame()
         self.U = pd.DataFrame()
         self.GT = pd.DataFrame()
+        self.list_RPE = pd.DataFrame()
 
         self.h5_to_df()
 
     def __getitem__(self, item):
-        v_mes0 = self.init.loc[["ve", "vn", "vu"], item].values
-        ang0 = self.init.loc[["roll", "pitch", "yaw"], item].values
+        v_mes0 = self.init.loc[:, item].loc[0, ["ve", "vn", "vu"]].values
+        ang0 = self.init.loc[:, item].loc[0, ["roll", "pitch", "yaw"]].values
         time = self.time.loc[:, item]
         time_t = time[~time['time'].isna()].to_numpy()
         U = self.U.loc[:, item]
         U_t = torch.tensor(U[~U['ax'].isna()].to_numpy(), dtype=torch.float32)
         GT = self.GT.loc[:, item]
-        GT_t = torch.tensor(GT[~GT['x'].isna()].to_numpy(), dtype=torch.float32)
-        return (v_mes0, ang0), time_t, U_t, GT_t
+        GT_pose_t = torch.tensor(GT[~GT['x'].isna()].loc[:, ['x', 'y', 'z']].to_numpy(), dtype=torch.float32)
+        GT_rot_t = torch.tensor(GT[~GT['x'].isna()].loc[:, 'rot_matrix'], dtype=torch.float32)
+        RPE = self.list_RPE.loc[:, item]
+        list_rpe = RPE[~RPE[RPE.columns[0]].isna()]
+        return (v_mes0, ang0), time_t, U_t, (GT_pose_t, GT_rot_t), list_rpe
 
     def __len__(self):
         return len(list(self.hdf.get(self.split)))
 
     def __iter__(self):
         seqs = self.hdf.get(self.split)
-        for i in list(seqs.keys()):
-            print(i)
-            yield i, self[i]
+        for name in list(seqs.keys()):
+            _, t, u, gt, list_rpe = self[name]
+            N = self.get_start_and_end(t)
+            v_mes0 = self.init.loc[:, name].loc[N[0], ["ve", "vn", "vu"]].values  # Get the velocity at the beginning of the sub-sequence
+            ang0 = self.init.loc[:, name].loc[N[0], ["roll", "pitch", "yaw"]].values
+            yield name, ((v_mes0, ang0), t[N[0]:N[1], :], u[N[0]:N[1], :], (gt[0][N[0]:N[1], :], gt[1][N[0]:N[1], :])), list_rpe, N
 
     def h5_to_df(self):
         seqs = self.hdf.get(self.split)
@@ -145,27 +154,43 @@ class KittiDataset(Dataset):
         dict_gt = {}
         dict_time = {}
         dict_init = {}
-        for i in list(seqs.keys()):
+        dict_rpe = {}
+        for name in list(seqs.keys()):
             # get initial condictions
-            init_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/dataset").loc[:, ["ve", "vn", "vu", "roll", "pitch", "yaw"]].iloc[0, :]
-            dict_init[f"{i}"] = pd.Series(init_df)  # Add the DataFrame to the dictionary
+            init_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/dataset")).loc[:, ["ve", "vn", "vu", "roll", "pitch", "yaw"]]
+            dict_init[f"{name}"] = init_df  # Add the DataFrame to the dictionary
 
             # get time vector
-            time_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/time")
-            dict_time[f"{i}"] = pd.DataFrame(time_df)  # Add the DataFrame to the dictionary
+            time_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/time"))
+            dict_time[f"{name}"] = time_df  # Add the DataFrame to the dictionary
 
             # get IMU measurment + time
-            u_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/w_a_input")  # Get the input DataFrame for the given date and drive
-            dict_u[f"{i}"] = pd.DataFrame(u_df)  # Add the DataFrame to the dictionary
+            u_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/w_a_input"))  # Get the input DataFrame for the given date and drive
+            dict_u[f"{name}"] = u_df  # Add the DataFrame to the dictionary
 
             # get Ground_Truth
-            gt_df = pd.read_hdf(self.hdf_path, f"{self.split}/{i}/ground_truth")  # Get the input DataFrame for the given date and drive
-            dict_gt[f"{i}"] = pd.DataFrame(gt_df)  # Add the DataFrame to the dictionary
+            gt_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/ground_truth"))  # Get the input DataFrame for the given date and drive
+            dict_gt[f"{name}"] = gt_df  # Add the DataFrame to the dictionary
 
-        self.init = pd.concat(dict_init, axis=1)  # Create DataFrame from dictionary, with index as dict keys
-        self.time = pd.concat(dict_time, axis=1)  # Create DataFrame from dictionary, with index as dict keys
-        self.U = pd.concat(dict_u, axis=1)  # Create DataFrame from dictionary, with index as dict keys
-        self.GT = pd.concat(dict_gt, axis=1)  # Create DataFrame from dictionary, with index as dict keys
+            gt_pose = torch.tensor(gt_df.loc[:, ['x', 'y', 'z']].to_numpy(), dtype=torch.float32)
+            gt_rot = torch.tensor(gt_df.loc[:, 'rot_matrix'], dtype=torch.float32)
+            # dict_rpe[f"{name}"] = pd.DataFrame(compute_delta_p(gt_rot, gt_pose))
+            dict_rpe[f"{name}"] = pd.DataFrame(compute_delta_p(gt_rot, gt_pose), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
+
+        self.init = pd.concat(dict_init, axis=1)            # Create DataFrame from dictionary, with index as dict keys
+        self.time = pd.concat(dict_time, axis=1)            # Create DataFrame from dictionary, with index as dict keys
+        self.U = pd.concat(dict_u, axis=1)                  # Create DataFrame from dictionary, with index as dict keys
+        self.GT = pd.concat(dict_gt, axis=1)                # Create DataFrame from dictionary, with index as dict keys
+        self.list_RPE = pd.concat(dict_rpe, axis=1)        # Create DataFrame from dictionary, with index as dict keys
+
+    def get_start_and_end(self, X):
+        """
+        Generate a random sub-sequence from training dataset with size 'self.seq_length'
+        :return:
+        """
+        N_start = 10 * int(self.rng.integers(low=0, high=(X.shape[0] - self.seq_length)/10, size=1))
+        N_end = N_start + self.seq_length
+        return N_start, N_end
 
 
 class RMSELoss(torch.nn.Module):
@@ -183,7 +208,7 @@ class CNN(torch.nn.Module):
     def __init__(self, seq_length):
         super(CNN, self).__init__()
 
-        self.layers = torch.nn.Sequential(
+        self.conv_layers = torch.nn.Sequential(
             # Convolutional part
             torch.nn.Conv1d(in_channels=6,                          # Applies a 1D convolution over an input signal composed of several input planes
                             out_channels=32,
@@ -199,7 +224,8 @@ class CNN(torch.nn.Module):
             torch.nn.ReplicationPad1d(4),                           # Pads the input tensor using replication of the input boundary
             torch.nn.ReLU(),                                        # Applies the rectified linear unit function element-wise: ReLU(x) = (x)+ = max(0, x)
             torch.nn.Dropout(p=0.5),                                # Randomly zeroes some of th eelements of the input tensor with probability p, using samples from a Bernoulli distribution
-
+        )
+        self.dense_layers = torch.nn.Sequential(
             # Fully connected part
             torch.nn.Flatten(),                                     # Flattens a contigous range of dims into a tensor
             torch.nn.Linear(32, 2),                                 # Applies a linear transformation to the incoming data: y = xA.T + b
@@ -212,7 +238,10 @@ class CNN(torch.nn.Module):
 
     @timming
     def forward(self, x):
-        out = self.layers(x)
+        conv_in = x.t().unsqueeze(0)
+        conv_out = self.conv_layers(conv_in)
+        dense_in = conv_out.transpose(0, 2).squeeze()
+        out = self.dense_layers(dense_in)
         return out
 
 
@@ -223,61 +252,72 @@ def make_trainning(model, EPOCHS):
     # #### - Train - #### #
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    batch_bar = tqdm(total=len(train), unit="batch", desc="Training", leave=False)
-    epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
+    # batch_bar = tqdm(total=len(train), unit="batch", desc="Training", leave=False)
+    # epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
 
     train_loss_history = []
     val_loss_history = []
 
     for epoch in range(EPOCHS):
-        cprint("Générer les sous-séquences aléatoires", 'red')
         train_running_loss = 0.
 
         model.train()                                               # Make sure gradient tracking is on, and do a pass over the data
+        optimizer.zero_grad()
 
-        batch_bar.reset()
+        # batch_bar.reset()
 
-        for batch_index, (seq_name, (init_cond, t, inputs, ground_truth)) in enumerate(train):
+        for batch_index, (seq_name, (init_cond, t, inputs, ground_truth), list_rpe, N) in enumerate(train):
             print(batch_index, seq_name)
-            print(init_cond, t.shape, inputs.shape, ground_truth.shape)
-            inputs_net, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
+            print(init_cond, t.shape, inputs.shape, (ground_truth[0].shape, ground_truth[1].shape))
+            print(f"Start - end: {N}")
+            inputs_net = inputs.to(DEVICE)
 
-            input_net_norm = normalize(inputs_net)                  # Normalize inputs
-            z_cov_net = model.forward(inputs_net)
-            z_cov = z_cov_net.to('cpu')                             # Move the CNN result to 'cpu' for Kalman Filter iterations
-            Rot, p = iekf.train_run(time, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter
+            with torch.autograd.set_detect_anomaly(True):
+                # Je sais pas s'il faut normalizer l'input car la normalisation va scale down/up des caractéristiques des signaux
+                # ce qui peut fausser l'amplitude de la sortie du CNN
+                # input_net_norm = normalize(inputs_net)                  # Normalize inputs
+                z_cov_net = model.forward(inputs_net)
+                z_cov = z_cov_net.cpu()                # Move the CNN result to 'cpu' for Kalman Filter iterations
+                inputs = inputs.cpu()
 
-            loss = criterion(iekf_out, ground_truth)  # compute loss
-            loss.backward()                                         # Calculate gradients
-            optimizer.step()                                        # Adjust learning weights
+                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter
 
-            train_running_loss += loss.item()
+                # Rot_torch, p_torch = torch.from_numpy(Rot).to('cpu'), torch.from_numpy(p).to('cpu')  # Move the output of the Kalman Fiter to torch
+                iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
 
-            batch_bar.set_postfix(train_loss=train_running_loss/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
-            batch_bar.update()
+                loss = criterion(iekf_p_loss, gt_p_loss)  # compute loss
+                loss.backward()                                         # Calculate gradients
+                optimizer.step()                                        # Adjust learning weights
+
+                train_running_loss += loss.item()
+                exit()
+
+            # batch_bar.set_postfix(train_loss=train_running_loss/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
+            # batch_bar.update()
         train_loss = train_running_loss / batch_index
         train_loss_history.append(train_loss)
 
         # #### - Validation - #### #
-        val_running_loss = 0.
-        model.eval()
+        if False:
+            val_running_loss = 0.
+            model.eval()
 
-        with torch.no_grad():
-            for batch_index, (inputs, ground_truth) in enumerate(validation):
-                inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
+            with torch.no_grad():
+                for batch_index, (inputs, ground_truth) in enumerate(validation):
+                    inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
 
-                # Ajouter la normalisation de l'input
-                z_cov = model.forward(inputs)
-                iekf_out = []  # run l'IEKF
+                    # Ajouter la normalisation de l'input
+                    z_cov = model.forward(inputs)
+                    iekf_out = []  # run l'IEKF
 
-                loss = criterion(iekf_out, ground_truth)            # compute loss
+                    loss = criterion(iekf_out, ground_truth)            # compute loss
 
-                val_running_loss += loss.item()
-            val_loss = val_running_loss / batch_index
-            val_loss_history.append(val_loss)
+                    val_running_loss += loss.item()
+                val_loss = val_running_loss / batch_index
+                val_loss_history.append(val_loss)
 
-        epoch_bar.set_postfix(train_loss=train_loss, val_loss=val_loss, lr=optimizer.param_groups[0]['lr'])
-        epoch_bar.update()
+        # epoch_bar.set_postfix(train_loss=train_loss, val_loss=val_loss, lr=optimizer.param_groups[0]['lr'])
+        # epoch_bar.update()
     return train_loss_history, val_loss_history
 
 
@@ -299,9 +339,6 @@ if __name__ == '__main__':
     parser.add_argument(
         "-e", "--epochs", type=int, required=True, help="Number of epochs to train the model. Ex: --epochs 400"
     )
-    # parser.add_argument(
-    #     "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 64"
-    # )
     parser.add_argument(
         "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
     )
@@ -316,16 +353,20 @@ if __name__ == '__main__':
 
     save_path = "../data/processed/dataset.h5"                      # Path to the .h5 dataset
 
-    train = KittiDataset(save_path, SEQ_LEN, 'train')
-    validation = KittiDataset(save_path, SEQ_LEN, 'validation')
-
-    _, _, u, _ = train['day_2011_10_03_drive_0042_extract']
-    normalize(u)
+    train = KittiDataset(save_path, SEQ_LEN, 'train', rng)
+    validation = KittiDataset(save_path, SEQ_LEN, 'validation', rng)
 
     # Model
     model = CNN(SEQ_LEN).to(DEVICE)
+
+    # # test the model and fixe seed generation
+    # test_input = torch.rand((2000, 6)).to(DEVICE)
+    # prediction = model(test_input)
+    # print(prediction)
+    # exit()
+
     # Loss
-    criterion = torch.nn.MSELoss()
+    criterion = torch.nn.MSELoss().to(DEVICE)
 
     train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
