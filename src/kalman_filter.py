@@ -1,6 +1,7 @@
 from scipy.spatial.transform import Rotation as scipyRot
 from termcolor import cprint
 import numpy as np
+import torch
 import random
 import time
 
@@ -44,7 +45,7 @@ def set_parameters(original_class):
 
 # #### - Class - #### #
 class Parameters:
-    g = np.array([0, 0, -9.80665])  # gravity vector
+    g = torch.Tensor([0, 0, -9.80665])  # gravity vector
 
     P_dim = 21                      # covariance dimension
 
@@ -82,10 +83,10 @@ class Parameters:
 
 @set_parameters  # decorate the class with the class attributes of the Class Parameters
 class IEKF:
-    Id2 = np.eye(2)
-    Id3 = np.eye(3)
-    Id6 = np.eye(6)
-    IdP = np.eye(21)
+    Id2 = torch.eye(2)
+    Id3 = torch.eye(3)
+    Id6 = torch.eye(6)
+    IdP = torch.eye(21)
 
     def __init__(self):
         super(IEKF, self).__init__()
@@ -93,15 +94,15 @@ class IEKF:
         # for key, val in self.__dict__.items():
         #     print(key, type(val))
 
-        self.Q = np.diag([self.cov_omega,       self.cov_omega,     self. cov_omega,                                    # Set the state noise matix
-                          self.cov_acc,         self.cov_acc,       self.cov_acc,
-                          self.cov_b_omega,     self.cov_b_omega,   self.cov_b_omega,
-                          self.cov_b_acc,       self.cov_b_acc,     self.cov_b_acc,
-                          self.cov_Rot_c_i,     self.cov_Rot_c_i,   self.cov_Rot_c_i,
-                          self.cov_t_c_i,       self.cov_t_c_i,     self.cov_t_c_i])
+        self.Q = torch.diag(torch.Tensor([self.cov_omega,       self.cov_omega,     self. cov_omega,         # Set the state noise matix
+                                          self.cov_acc,         self.cov_acc,       self.cov_acc,
+                                          self.cov_b_omega,     self.cov_b_omega,   self.cov_b_omega,
+                                          self.cov_b_acc,       self.cov_b_acc,     self.cov_b_acc,
+                                          self.cov_Rot_c_i,     self.cov_Rot_c_i,   self.cov_Rot_c_i,
+                                          self.cov_t_c_i,       self.cov_t_c_i,     self.cov_t_c_i]))
 
     @timming
-    def run(self, t, u, z_covs, v_0, ang0):
+    def run(self, t, u, z_covs, v_mes0, ang0):
         """
         Run IEKF algorithm on input sequence
         :param t: time vector
@@ -111,33 +112,12 @@ class IEKF:
         :param ang0: initial orientation
         :return:
         """
-        dt = t[1:] - t[:-1]                                                                                             # Set the delta time vector, that contain the delta of time for each sample
-        N = u.shape[0]                                                                                                  # Sequence length
-        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_0, ang0, N)                                   # Initialise the states variables with initial condictions
-        measurements_covs = self.z_to_cov(z_covs)
 
-        for i in range(1, N):
-            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.propagate(Rot[i-1], v[i-1], p[i-1], b_omega[i-1], b_acc[i-1], Rot_c_i[i-1], t_c_i[i-1], P, u[i], dt[i-1])
+        t = torch.Tensor(t).cpu() if type(t).__module__ == np.__name__ else t.cpu()
+        u = torch.Tensor(u).cpu() if type(u).__module__ == np.__name__ else u.cpu()
+        z_covs = torch.Tensor(z_covs).cpu() if type(z_covs).__module__ == np.__name__ else z_covs.cpu()
+        v_mes0 = torch.Tensor(v_mes0).cpu() if type(v_mes0).__module__ == np.__name__ else v_mes0.cpu()
 
-            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.update(Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P, u[i], measurements_covs[i])
-            # correct numerical error every second
-            if i % self.n_normalize_rot == 0:
-                Rot[i] = self.normalize_rot(Rot[i])
-            # correct numerical error every 10 seconds
-            if i % self.n_normalize_rot_c_i == 0:
-                Rot_c_i[i] = self.normalize_rot(Rot_c_i[i])
-        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
-
-    def train_run(self, t, u, z_covs, v_mes0, ang0):
-        """
-        Run IEKF algorithm on input sequence
-        :param t: time vector
-        :param u: input measurement, u = [ax, ay, az, wx, wy, wz]
-        :param z_covs: pseudo-measure covariance, [cov_v_lat, cov_v_up]
-        :param v_mes0: initial velocity
-        :param ang0: initial orientation
-        :return:
-        """
         dt = t[1:] - t[:-1]                                                                                             # Set the delta time vector, that contain the delta of time for each sample
         N = u.shape[0]                                                                                                  # Sequence length
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_mes0, ang0, N)                                   # Initialise the states variables with initial condictions
@@ -153,60 +133,103 @@ class IEKF:
             # correct numerical error every 10 seconds
             if i % self.n_normalize_rot_c_i == 0:
                 Rot_c_i[i] = self.normalize_rot(Rot_c_i[i])
+
+        Rot = Rot.numpy() if type(Rot).__module__ == torch.__name__ else Rot
+        v = v.numpy() if type(v).__module__ == torch.__name__ else v
+        p = p.numpy() if type(p).__module__ == torch.__name__ else p
+        b_omega = b_omega.numpy() if type(b_omega).__module__ == torch.__name__ else b_omega
+        b_acc = b_acc.numpy() if type(b_acc).__module__ == torch.__name__ else b_acc
+        Rot_c_i = Rot_c_i.numpy() if type(Rot_c_i).__module__ == torch.__name__ else Rot_c_i
+        t_c_i = t_c_i.numpy() if type(t_c_i).__module__ == torch.__name__ else t_c_i
+        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
+
+    def train_run(self, t, u, z_covs, v_mes0, ang0):
+        """
+        Run IEKF algorithm on input sequence
+        :param t: time vector
+        :param u: input measurement, u = [ax, ay, az, wx, wy, wz]
+        :param z_covs: pseudo-measure covariance, [cov_v_lat, cov_v_up]
+        :param v_mes0: initial velocity
+        :param ang0: initial orientation
+        :return:
+        """
+
+        t = torch.Tensor(t).cpu() if type(t).__module__ == np.__name__ else t.cpu()
+        u = torch.Tensor(u).cpu() if type(u).__module__ == np.__name__ else u.cpu()
+        z_covs = torch.Tensor(z_covs).cpu() if type(z_covs).__module__ == np.__name__ else z_covs.cpu()
+        v_mes0 = torch.Tensor(v_mes0).cpu() if type(v_mes0).__module__ == np.__name__ else v_mes0.cpu()
+
+        dt = t[1:] - t[:-1]                                                                                             # Set the delta time vector, that contain the delta of time for each sample
+        N = u.shape[0]                                                                                                  # Sequence length
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_mes0, ang0, N)                                   # Initialise the states variables with initial condictions
+        measurements_covs = self.z_to_cov(z_covs)
+
+        for i in range(1, N):
+            ti = time.time_ns()
+            Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = \
+                self.propagate(Rot[i - 1], v[i - 1], p[i - 1], b_omega[i - 1], b_acc[i - 1], Rot_c_i[i - 1], t_c_i[i - 1], P, u[i], dt[i - 1])
+
+            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = \
+                self.update(Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i, u[i], measurements_covs[i])
+
         return Rot, p
 
     def init_run(self, v_mes0, ang0, N):
-        Rot = np.zeros((N, 3, 3))                               # Rotation matrix (orientation) in car-frame
-        v = np.zeros((N, 3))                                    # Velocity vector
-        p = np.zeros((N, 3))                                    # Position vector
-        b_omega = np.zeros((N, 3))                              # Angular speed biase
-        b_acc = np.zeros((N, 3))                                # Acceleration biase
-        Rot_c_i = np.zeros((N, 3, 3))                           # Rotation matrix from car-frame to IMU-frame
-        t_c_i = np.zeros((N, 3))                                # Translation vector fro car-frame to IMU-frame
+        Rot = torch.zeros((N, 3, 3))                                # Rotation matrix (orientation) in car-frame
+        v = torch.zeros((N, 3))                                     # Velocity vector
+        p = torch.zeros((N, 3))                                     # Position vector
+        b_omega = torch.zeros((N, 3))                               # Angular speed biase
+        b_acc = torch.zeros((N, 3))                                 # Acceleration biase
+        Rot_c_i = torch.zeros((N, 3, 3))                            # Rotation matrix from car-frame to IMU-frame
+        t_c_i = torch.zeros((N, 3))                                 # Translation vector fro car-frame to IMU-frame
 
-        # Rot[0] = self.from_rpy(ang0[0], ang0[1], ang0[2])       # Set initial car orientation
         rot0 = scipyRot.from_euler('xyz', [ang0[0], ang0[1], ang0[2]])
-        Rot[0] = rot0.as_matrix()                                  # Set initial car orientation
-        v[0] = v_mes0                                           # Set initial velocity vector
-        Rot_c_i[0] = np.eye(3)                                  # Set initial rotation between car and IMU frame to 0, i.e. identity matrix
+        Rot[0] = torch.from_numpy(rot0.as_matrix())                 # Set initial car orientation
+        v[0] = v_mes0                                               # Set initial velocity vector
+        Rot_c_i[0] = torch.eye(3)                                   # Set initial rotation between car and IMU frame to 0, i.e. identity matrix
 
-        # cf: equation 8.18, parti 5.2, chapter 8 of the these "Deep learning, inertial measurements units, and odometry : some modern prototyping techniques for navigation based on multi-sensor fusion", by Martin BROSSARD
-        P = np.zeros((self.P_dim, self.P_dim))
-        P[:2, :2] = self.cov_Rot0 * self.Id2                    # Set initial orientation covariance, with no error on initial yaw value
-        P[3:5, 3:5] = self.cov_v0 * self.Id2                    # Set initial velocity (x and y) covariance
-        P[5:9, 5:9] = np.zeros((4, 4))                          # Set initial z velocity and position covariance to 0
-        P[9:12, 9:12] = self.cov_b_omega0 * self.Id3            # Set initial angular speed biase covariance
-        P[12:15, 12:15] = self.cov_b_acc0 * self.Id3            # Set initial acceleration biase covariance
-        P[15:18, 15:18] = self.cov_Rot_c_i0 * self.Id3          # Set initial rotation car to IMU frame covariance
-        P[18:21, 18:21] = self.cov_t_c_i0 * self.Id3            # Set initial translation car to IMU frame covariance
+        # cf: equation 8.18, parti 5.2, chapter 8 of the these "Deep learning, inertial measurements units, and odometry : some modern prototyping techniques for navigation based on multi-sensor fusion", by Martin BROSSARD & al.
+        P = torch.zeros((self.P_dim, self.P_dim)).cpu()
+        P[:2, :2] = self.cov_Rot0 * self.Id2                        # Set initial orientation covariance, with no error on initial yaw value
+        P[3:5, 3:5] = self.cov_v0 * self.Id2                        # Set initial velocity (x and y) covariance
+        P[5:9, 5:9] = torch.zeros((4, 4)).cpu()                     # Set initial z velocity and position covariance to 0
+        P[9:12, 9:12] = self.cov_b_omega0 * self.Id3                # Set initial angular speed biase covariance
+        P[12:15, 12:15] = self.cov_b_acc0 * self.Id3                # Set initial acceleration biase covariance
+        P[15:18, 15:18] = self.cov_Rot_c_i0 * self.Id3              # Set initial rotation car to IMU frame covariance
+        P[18:21, 18:21] = self.cov_t_c_i0 * self.Id3                # Set initial translation car to IMU frame covariance
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
 
     def z_to_cov(self, z):
-        cov = np.asarray(z).copy()
+        cov = torch.zeros_like(z)
         cov[:, 0] = self.var_lat**2 * 10**(self.beta_lat*z[:, 0])
         cov[:, 1] = self.var_up**2 * 10**(self.beta_up*z[:, 1])
         return cov
 
     def propagate(self, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, Rot_c_i_prev, t_c_i_prev, P_prev, u, dt):
         # Propagate the state with the non-linear equations
-        acc = Rot_prev @ (u[3:6] - b_acc_prev) + self.g
+        Rot_prev = Rot_prev.clone()
+        acc_b = u[3:6] - b_acc_prev
+        acc = Rot_prev.mv(acc_b) + self.g
         v = v_prev + acc * dt
-        p = p_prev + v_prev*dt + 1/2 * acc * dt**2
-        omega = u[:3] - b_omega_prev
-        Rot = Rot_prev @ self.so3exp(omega * dt)
+        p = p_prev + v_prev.clone() * dt + 1 / 2 * acc * dt ** 2
+
+        omega = (u[:3] - b_omega_prev) * dt
+        Rot = Rot_prev.mm(self.so3exp(omega))
+
         b_omega = b_omega_prev
         b_acc = b_acc_prev
-        Rot_c_i = Rot_c_i_prev
+        Rot_c_i = Rot_c_i_prev.clone()
         t_c_i = t_c_i_prev
 
         P = self.propagate_cov(P_prev, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, u, dt)
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
 
     def propagate_cov(self, P_prev, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, u, dt):
-        F = np.zeros((self.P_dim, self.P_dim))
-        G = np.zeros((self.P_dim, self.Q_dim))
-        v_skew_rot = self.skew(v_prev) @ Rot_prev
-        p_skew_rot = self.skew(p_prev) @ Rot_prev
+        F = torch.zeros((self.P_dim, self.P_dim))
+        G = torch.zeros((self.P_dim, self.Q_dim))
+        Q = self.Q.clone()
+        v_skew_rot = self.skew(v_prev).mm(Rot_prev)
+        p_skew_rot = self.skew(p_prev).mm(Rot_prev)
 
         # Fill F matrix, the jacobian of f(.) with respect to X
         F[:3, 9:12] = -Rot_prev
@@ -227,103 +250,107 @@ class IEKF:
 
         F = F * dt
         G = G * dt
-        F_square = F.dot(F)
-        F_cube = F_square.dot(F)
+        F_square = F @ F
+        F_cube = F_square @ F
         Phi = self.IdP + F + 1/2*F_square + 1/6*F_cube
-        P = Phi @ (P_prev + G @ self.Q @ G.T) @ Phi.T
+        P = Phi.mm(P_prev + G.mm(Q).mm(G.t())).mm(Phi.t())
         return P
 
     def update(self, Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, u, measurement_cov):
-        Rot_body = Rot.dot(Rot_c_i)                                                                                     # orientation of body frame
-        v_imu = Rot.T.dot(v)                                                                                            # velocity in imu frame
-        v_body = Rot_c_i.T.dot(v_imu)                                                                                   # velocity in body frame
-        v_body += self.skew(t_c_i) @ (u[:3] - b_omega)                                                                 # velocity in body frame in the vehicle axis
+        Rot_body = Rot.mm(Rot_c_i)                                                                                     # orientation of body frame
+        v_imu = Rot.t().mv(v)                                                                                            # velocity in imu frame
+        v_body = Rot_c_i.t().mv(v_imu)                                                                                   # velocity in body frame
+        v_body += self.skew(t_c_i).mv((u[:3] - b_omega))                                                                 # velocity in body frame in the vehicle axis
         Omega = self.skew(u[:3] - b_omega)                                                                              # Anguar velocity correction and transform into delta roation matrix
 
         # Jacobian w.r.t. car frame
-        H_v_imu = Rot_c_i.T.dot(self.skew(v_imu))
+        H_v_imu = Rot_c_i.t().mm(self.skew(v_imu))
         H_t_c_i = -self.skew(t_c_i)
 
-        H = np.zeros((2, self.P_dim))
-        H[:, 3:6] = Rot_body.T[1:]
+        H = torch.zeros((2, self.P_dim)).cpu()
+        H[:, 3:6] = Rot_body.t()[1:]
         H[:, 15:18] = H_v_imu[1:]
         H[:, 9:12] = H_t_c_i[1:]
         H[:, 18:21] = -Omega[1:]
         r = - v_body[1:]
-        R = np.diag(measurement_cov)
+        R = torch.diag(measurement_cov)
 
         Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up = self.state_and_cov_update(Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R)
         return Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up
 
     def state_and_cov_update(self, Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R):
-        S = H @ P @ H.T + R
-        K = (np.linalg.solve(S, (P @ H.T).T)).T
-        dx = K.dot(r)
+        S = H.mm(P).mm(H.t()) + R
+        K = (torch.linalg.solve(S, (P.mm(H.t())).t())).t()
+        dx = K.mv(r)
 
         dR, dxi = self.sen3exp(dx[:9])
         dv = dxi[:, 0]
         dp = dxi[:, 1]
-        Rot_up = dR.dot(Rot)
-        v_up = dR.dot(v) + dv
-        p_up = dR.dot(p) + dp
+        Rot_up = dR.mm(Rot)
+        v_up = dR.mv(v) + dv
+        p_up = dR.mv(p) + dp
 
         b_omega_up = b_omega + dx[9:12]
         b_acc_up = b_acc + dx[12:15]
 
         dR = self.so3exp(dx[15:18])
-        Rot_c_i_up = dR.dot(Rot_c_i)
+        Rot_c_i_up = dR.mm(Rot_c_i)
         t_c_i_up = t_c_i + dx[18:21]
 
-        I_KH = self.IdP - K @ H
-        P_up = I_KH @ P @ I_KH.T + K @ R @ K.T
-        P_up = (P_up + P_up.T)/2
+        I_KH = self.IdP - K.mm(H)
+        P_up = I_KH.mm(P).mm(I_KH.t()) + K.mm(R).mm(K.t())
+        P_up = (P_up + P_up.t())/2
         return Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up
 
     def sen3exp(self, xi):
         phi = xi[:3]
-        angle = np.linalg.norm(phi)
+        angle = torch.linalg.norm(phi)
         # Near |phi|==0, use first order Taylor expansion
-        if np.abs(angle) < 1e-8:
+        if torch.abs(angle) < 1e-8:
             skew_phi = self.skew(phi)
             J = self.Id3 + 0.5 * skew_phi
             Rot = self.Id3 + skew_phi
         else:
             axis = phi / angle
             skew_axis = self.skew(axis)
-            s = np.sin(angle)
-            c = np.cos(angle)
-            J = (s / angle) * self.Id3 + (1 - s / angle) * np.outer(axis, axis) + ((1 - c) / angle) * skew_axis
-            Rot = c * self.Id3 + (1 - c) * np.outer(axis, axis) + s * skew_axis
-        x = J @ xi[3:].reshape(-1, 3).T
+            s = torch.sin(angle)
+            c = torch.cos(angle)
+            J = (s / angle) * self.Id3 + (1 - s / angle) * torch.outer(axis, axis) + ((1 - c) / angle) * skew_axis
+            Rot = c * self.Id3 + (1 - c) * torch.outer(axis, axis) + s * skew_axis
+        x = J.mm(xi[3:].view(-1, 3).t())
         return Rot, x
 
     def so3exp(self, phi):
-        angle = np.linalg.norm(phi)
+        angle = torch.linalg.norm(phi)
         # Near phi==0, use first order Taylor expansion
-        if np.abs(angle) < 1e-8:
+        if torch.abs(angle) < 1e-8:
             skew_phi = self.skew(phi)
             return self.Id3 + skew_phi
         axis = phi / angle
         skew_axis = self.skew(axis)
-        s = np.sin(angle)
-        c = np.cos(angle)
-        return c * self.Id3 + (1 - c) * np.outer(axis, axis) + s * skew_axis
+        s = torch.sin(angle)
+        c = torch.cos(angle)
+        return c * self.Id3 + (1 - c) * torch.outer(axis, axis) + s * skew_axis
 
     @staticmethod
     def skew(x):
-        X = np.array([[0, -x[2], x[1]],
-                      [x[2], 0, -x[0]],
-                      [-x[1], x[0], 0]])
+        X = torch.Tensor([[0, -x[2], x[1]],
+                          [x[2], 0, -x[0]],
+                          [-x[1], x[0], 0]])
         return X
 
     @staticmethod
-    def normalize_rot(Rot):
-        # The SVD is commonly written as a = U S V.H.
-        # The v returned by this function is V.H and u = U.
-        U, _, V = np.linalg.svd(Rot, full_matrices=False)
-        S = np.eye(3)
-        S[2, 2] = np.linalg.det(U) * np.linalg.det(V)
-        return U.dot(S).dot(V)
+    def normalize_rot(rot):
+        # U, S, V = torch.svd(A) returns the singular value
+        # decomposition of a real matrix A of size (n x m) such that A=USV′.
+        # Irrespective of the original strides, the returned matrix U will
+        # be transposed, i.e. with strides (1, n) instead of (n, 1).
+
+        # pytorch SVD seems to be inaccurate, so just move to numpy immediately
+        U, _, V = torch.svd(rot)
+        S = torch.eye(3)
+        S[2, 2] = torch.det(U) * torch.det(V)
+        return U.mm(S).mm(V.t())
 
 
 # #### - Main - #### #
@@ -358,7 +385,7 @@ if __name__ == '__main__':
     dataset = pd.read_hdf(save_path, f"train/{date}/dataset")   # Get the input DataFrame for the given date and drive
     u_df = pd.read_hdf(save_path, f"train/{date}/w_a_input")    # Get the input DataFrame for the given date and drive
     time_df = pd.read_hdf(save_path, f"train/{date}/time")      # Get the time vector DataFrame for the given date and drive
-    ground_truth = pd.read_hdf(save_path,f"train/{date}/ground_truth")      # Get the time vector DataFrame for the given date and drive
+    ground_truth = pd.read_hdf(save_path, f"train/{date}/ground_truth")      # Get the time vector DataFrame for the given date and drive
     X_gt = ground_truth[['x']].values
     Y_gt = ground_truth[['y']].values
 
@@ -376,6 +403,30 @@ if __name__ == '__main__':
     plt.plot(X_gt, Y_gt, 'k-')
     plt.plot(p[:, 0], p[:, 1], 'g-.')
     plt.axis('equal')
+
+    # from evo.core import metrics
+    # from evo.core import lie_algebra as lie
+    # from evo.core.trajectory import PosePath3D
+    # rpe_metric = metrics.RPE(pose_relation=metrics.PoseRelation.translation_part,
+    #                          delta=10, delta_unit=metrics.Unit.frames,
+    #                          all_pairs=False)
+    # gt_rot = ground_truth['rot_matrix'].values
+    # gt_pose = ground_truth[['x', 'y', 'z']].values
+    # se3_pose_gt = []
+    # se3_pose = []
+    # for i in range(ground_truth['rot_matrix'].shape[0]):
+    #     se3_pose_gt.append(lie.se3(gt_rot[i], gt_pose[i, :]))
+    #     se3_pose.append(lie.se3(Rot[i], p[i, :]))
+    #
+    # gt_path3D = PosePath3D(ground_truth[['x', 'y', 'z']].values, se3_pose_gt)
+    # kf_path3D = PosePath3D(ground_truth[['x', 'y', 'z']].values, se3_pose)
+    # # print(gt_path3D)
+    # # print(kf_path3D)
+    #
+    # rpe_metric.process_data((gt_path3D, kf_path3D))
+    #
+    # rpe_stats = rpe_metric.get_all_statistics()
+    # print(rpe_stats)
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
