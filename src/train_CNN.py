@@ -42,6 +42,67 @@ def normalize(u):
     return u_norm
 
 
+def compute_delta_p(Rot, p):
+    """
+    Compute delta_p for Relative Position Error
+    """
+    list_rpe = [[], [], []]                                         # [idx_0, idx_end, pose_delta_p]
+
+    Rot = Rot[::10]                                                 # sub-sample at 10 Hz
+    Rot = Rot.cpu()
+    p = p[::10]                                                     # sub-sample at 10 Hz
+    p = p.cpu()
+
+    step_size = 10                                                  # every second, 10 sub-samples = 1s
+    distances = np.zeros(p.shape[0])
+    # this must be ground truth
+    dp = p[1:] - p[:-1]                                             # delta of position at each sub-sample
+    distances[1:] = dp.norm(dim=1).cumsum(0).numpy()                # cumulative sum of delta position to get the total length
+
+    seq_lengths = [100, 200, 300, 400, 500, 600, 700, 800]
+    k_max = int(Rot.shape[0] / step_size) - 1
+
+    for k in range(0, k_max):  # each k represent 1s pass in the dataset
+        idx_0 = k * step_size  # index of the k^th second in the sub-sample sequence
+        for seq_length in seq_lengths:  # run through [100, ..., 800]
+            if seq_length + distances[idx_0] > distances[-1]:  # go to the next iteration if left less than 'seq_length' to the end of the sequence distance
+                continue
+            idx_shift = np.searchsorted(distances[idx_0:], distances[idx_0] + seq_length)  # get number of sample that represent a distance of 'seq_length'
+            idx_end = idx_0 + idx_shift  # index of the end of 'seq_length' length from k^th seconde
+            list_rpe[0].append(idx_0)
+            list_rpe[1].append(idx_end)
+        idxs_0 = list_rpe[0]  # store the indices of each start where left [100, ..., 800]m
+        idxs_end = list_rpe[1]  # store the indices of each end where left [100, ..., 800]m
+        delta_p = Rot[idxs_0].transpose(-1, -2).matmul(((p[idxs_end] - p[idxs_0]).float()).unsqueeze(-1)).squeeze()  # calcul the cartesian coordinates from the initial position for each set of [100, ..., 800]
+        list_rpe[2] = delta_p.numpy()
+    return list_rpe
+
+
+def precompute_lost(Rot, p, list_rpe, N0):
+    # compute the relative translational error
+    N = p.shape[0]
+    Rot_10_Hz = Rot[::10]
+    p_10_Hz = p[::10]
+    idxs_0 = torch.Tensor(np.array(list_rpe.loc[:, 'idx_0'].values, dtype=float)).long() - int(N0 / 10)
+    idxs_end = torch.Tensor(np.array(list_rpe.loc[:, 'idx_end'].values, dtype=float)).long() - int(N0 / 10)
+    delta_p_gt = torch.Tensor(np.vstack(list_rpe.loc[:, 'pose_delta_p'].values))
+    idxs = torch.Tensor(idxs_0.shape[0]).bool()
+    idxs[:] = 1
+    idxs[idxs_0 < 0] = 0
+    idxs[idxs_end >= int(N / 10)] = 0
+    delta_p_gt = delta_p_gt[idxs]
+    idxs_end_bis = idxs_end[idxs]
+    idxs_0_bis = idxs_0[idxs]
+    if len(idxs_0_bis) == 0:
+        return None, None
+    else:
+        delta_p = Rot_10_Hz[idxs_0_bis].transpose(-1, -2).matmul((p_10_Hz[idxs_end_bis] - p_10_Hz[idxs_0_bis]).unsqueeze(-1)).squeeze()
+        distance = delta_p_gt.norm(dim=1).unsqueeze(-1)
+        iekf_pre_loss = delta_p.double() / distance.double()
+        gt_pre_loss = delta_p_gt.double() / distance.double()
+        return iekf_pre_loss.to(DEVICE), gt_pre_loss.to(DEVICE)
+
+
 # #### - Class - #### #
 class KittiDataset(Dataset):
     def __init__(self, hdf_path, seq_length, split):
