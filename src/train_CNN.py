@@ -1,3 +1,4 @@
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset
 from kalman_filter import IEKF
 from termcolor import cprint
@@ -12,7 +13,7 @@ import time
 import os
 
 
-os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'                   # Set the environement variable CUBLAS_WORKSPACE_CONFIG to ':4096:8' for the use of deterministic algorithms in convolution layers
+# os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'                   # Set the environement variable CUBLAS_WORKSPACE_CONFIG to ':4096:8' for the use of deterministic algorithms in convolution layers
 
 
 # #### - Decorator - #### #
@@ -35,6 +36,13 @@ def timming(function):
 
 
 # #### - Functions - #### #
+def create_folder(directory):
+    try:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+    except OSError:
+        print ('Error: Creating directory. ' + directory)
+
 def normalize(u):
     std = u.std(0, unbiased=True)
     mean = u.mean(0)
@@ -122,8 +130,8 @@ class KittiDataset(Dataset):
         self.h5_to_df()
 
     def __getitem__(self, item):
-        v_mes0 = self.init.loc[:, item].loc[0, ["ve", "vn", "vu"]].values
-        ang0 = self.init.loc[:, item].loc[0, ["roll", "pitch", "yaw"]].values
+        v_mes0 = self.init.loc[:, item].loc[:10, ["ve", "vn", "vu"]].values[0, :]
+        ang0 = self.init.loc[:, item].loc[:10, ["roll", "pitch", "yaw"]].values[0, :]
         time = self.time.loc[:, item]
         time_t = time[~time['time'].isna()].to_numpy()
         U = self.U.loc[:, item]
@@ -143,8 +151,8 @@ class KittiDataset(Dataset):
         for name in list(seqs.keys()):
             _, t, u, gt, list_rpe = self[name]
             N = self.get_start_and_end(t)
-            v_mes0 = self.init.loc[:, name].loc[N[0], ["ve", "vn", "vu"]].values  # Get the velocity at the beginning of the sub-sequence
-            ang0 = self.init.loc[:, name].loc[N[0], ["roll", "pitch", "yaw"]].values
+            v_mes0 = self.init.loc[:, name].loc[:, ["ve", "vn", "vu"]].values[N[0], :]  # Get the velocity at the beginning of the sub-sequence
+            ang0 = self.init.loc[:, name].loc[:, ["roll", "pitch", "yaw"]].values[N[0], :]
             yield name, ((v_mes0, ang0), t[N[0]:N[1], :], u[N[0]:N[1], :], (gt[0][N[0]:N[1], :], gt[1][N[0]:N[1], :])), list_rpe, N
 
     def h5_to_df(self):
@@ -188,8 +196,12 @@ class KittiDataset(Dataset):
         Generate a random sub-sequence from training dataset with size 'self.seq_length'
         :return:
         """
-        N_start = 10 * int(self.rng.integers(low=0, high=(X.shape[0] - self.seq_length)/10, size=1))
-        N_end = N_start + self.seq_length
+        if self.split == 'train':
+            N_start = 10 * int(self.rng.integers(low=0, high=(X.shape[0] - self.seq_length)/10, size=1))
+            N_end = N_start + self.seq_length
+        else:
+            N_start = 0
+            N_end = X.shape[0]
         return N_start, N_end
 
 
@@ -246,14 +258,15 @@ class CNN(torch.nn.Module):
 
 
 def make_trainning(model, EPOCHS):
+    writer = SummaryWriter(tensorboard_path)
     # #### - Kalman Filter - #### #
     iekf = IEKF()
 
     # #### - Train - #### #
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    # batch_bar = tqdm(total=len(train), unit="batch", desc="Training", leave=False)
-    # epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
+    batch_bar = tqdm(total=len(train), unit="batch", desc="Training", leave=False)
+    epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
 
     train_loss_history = []
     val_loss_history = []
@@ -263,61 +276,64 @@ def make_trainning(model, EPOCHS):
 
         model.train()                                               # Make sure gradient tracking is on, and do a pass over the data
         optimizer.zero_grad()
-
-        # batch_bar.reset()
+        batch_bar.reset()
 
         for batch_index, (seq_name, (init_cond, t, inputs, ground_truth), list_rpe, N) in enumerate(train):
-            print(batch_index, seq_name)
-            print(init_cond, t.shape, inputs.shape, (ground_truth[0].shape, ground_truth[1].shape))
-            print(f"Start - end: {N}")
+            # print(batch_index, seq_name)
+            # print(init_cond, t.shape, inputs.shape, (ground_truth[0].shape, ground_truth[1].shape))
+            # print(f"Start - end: {N}")
             inputs_net = inputs.to(DEVICE)
 
-            with torch.autograd.set_detect_anomaly(True):
-                # Je sais pas s'il faut normalizer l'input car la normalisation va scale down/up des caractéristiques des signaux
-                # ce qui peut fausser l'amplitude de la sortie du CNN
-                # input_net_norm = normalize(inputs_net)                  # Normalize inputs
-                z_cov_net = model.forward(inputs_net)
-                z_cov = z_cov_net.cpu()                # Move the CNN result to 'cpu' for Kalman Filter iterations
-                inputs = inputs.cpu()
+            # with torch.autograd.set_detect_anomaly(True):           # To pointout error in the gradients propagations
+            # Je sais pas s'il faut normalizer l'input car la normalisation va scale down/up des caractéristiques des signaux
+            # ce qui peut fausser l'amplitude de la sortie du CNN
+            # input_net_norm = normalize(inputs_net)                  # Normalize inputs
+            z_cov_net = model.forward(inputs_net)
+            z_cov = z_cov_net.cpu()                                 # Move the CNN result to 'cpu' for Kalman Filter iterations
+            inputs = inputs.cpu()
 
-                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter
+            Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter, result are already in torch.Tensor
 
-                # Rot_torch, p_torch = torch.from_numpy(Rot).to('cpu'), torch.from_numpy(p).to('cpu')  # Move the output of the Kalman Fiter to torch
-                iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
+            iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
 
-                loss = criterion(iekf_p_loss, gt_p_loss)  # compute loss
-                loss.backward()                                         # Calculate gradients
-                optimizer.step()                                        # Adjust learning weights
+            loss = criterion(iekf_p_loss, gt_p_loss)                # compute loss
+            if not loss.isnan():
+                train_running_loss += loss
 
-                train_running_loss += loss.item()
-                exit()
+            batch_bar.set_postfix(train_loss=train_running_loss.item()/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
+            batch_bar.update()
 
-            # batch_bar.set_postfix(train_loss=train_running_loss/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
-            # batch_bar.update()
-        train_loss = train_running_loss / batch_index
+        train_running_loss.backward()                               # Calculate gradients
+        optimizer.step()                                            # Adjust learning weights
+
+        train_loss = train_running_loss.item() / batch_index
         train_loss_history.append(train_loss)
+        writer.add_scalar('train/loss', train_loss, epoch)
 
         # #### - Validation - #### #
-        if False:
-            val_running_loss = 0.
-            model.eval()
+        val_running_loss = 0.
+        model.eval()
+        with torch.no_grad():
+            for batch_index, (seq_name, (init_cond, t, inputs, ground_truth), list_rpe, N) in enumerate(validation):
+                inputs_net = inputs.to(DEVICE)
 
-            with torch.no_grad():
-                for batch_index, (inputs, ground_truth) in enumerate(validation):
-                    inputs, ground_truth = inputs.to(DEVICE), ground_truth.to(DEVICE)
+                z_cov_net = model.forward(inputs_net)
+                z_cov = z_cov_net.cpu()                             # Move the CNN result to 'cpu' for Kalman Filter iterations
+                inputs = inputs.cpu()
 
-                    # Ajouter la normalisation de l'input
-                    z_cov = model.forward(inputs)
-                    iekf_out = []  # run l'IEKF
+                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter, result are already in torch.Tensor
 
-                    loss = criterion(iekf_out, ground_truth)            # compute loss
+                iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
 
-                    val_running_loss += loss.item()
-                val_loss = val_running_loss / batch_index
-                val_loss_history.append(val_loss)
+                loss = criterion(iekf_p_loss, gt_p_loss)            # compute loss
 
-        # epoch_bar.set_postfix(train_loss=train_loss, val_loss=val_loss, lr=optimizer.param_groups[0]['lr'])
-        # epoch_bar.update()
+                val_running_loss += loss.item()
+            val_loss = val_running_loss / (batch_index+1)
+            val_loss_history.append(val_loss)
+            writer.add_scalar('validation/loss', val_loss, epoch)
+
+        epoch_bar.set_postfix(train_loss=train_loss, val_loss=val_loss, lr=optimizer.param_groups[0]['lr'])
+        epoch_bar.update()
     return train_loss_history, val_loss_history
 
 
@@ -327,7 +343,7 @@ if __name__ == '__main__':
 
     random_seed = 34                                                # set random seed
     torch.backends.cudnn.enable = False                             # Disable cuDNN use of nondeterministic algorithms
-    torch.use_deterministic_algorithms(True)                        # Configure PyTorch to use deterministic algorithms instead of nondeterministic ones where available, and throw an error if an operation is known to be nondeterministic (and without a deterministic alternative)
+    # torch.use_deterministic_algorithms(True)                        # Configure PyTorch to use deterministic algorithms instead of nondeterministic ones where available, and throw an error if an operation is known to be nondeterministic (and without a deterministic alternative)
     torch.manual_seed(random_seed)                                  # Set the seed to the Random Number Generator (RNG) for all devices (both CPU and CUDA)
     rng = np.random.default_rng(random_seed)                        # Create a RNG with a fixed seed
     random.seed(random_seed)                                        # Set the Python seed
@@ -352,6 +368,8 @@ if __name__ == '__main__':
     print(f"Epochs: {EPOCHS}; Device: {DEVICE}; Sequence length: {SEQ_LEN}")
 
     save_path = "../data/processed/dataset.h5"                      # Path to the .h5 dataset
+    run_time = time.strftime('%Y%m%d_%H%M%S')
+    tensorboard_path = f"../runs/{run_time}"                                    # Path to the TensorBoard directory
 
     train = KittiDataset(save_path, SEQ_LEN, 'train', rng)
     validation = KittiDataset(save_path, SEQ_LEN, 'validation', rng)
@@ -369,6 +387,9 @@ if __name__ == '__main__':
     criterion = torch.nn.MSELoss().to(DEVICE)
 
     train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
+
+    create_folder(f"../models/{run_time}")
+    torch.save(model, f"../models/{run_time}/CNN.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
