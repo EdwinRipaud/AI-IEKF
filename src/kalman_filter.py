@@ -379,13 +379,14 @@ if __name__ == '__main__':
     seq_df_key = list(seq_df.keys())                                                      # Get the keys for the the given date
     print(seq_df_key)
 
-    date = "day_2011_09_30_drive_0018_extract"
+    date = "day_2011_09_30_drive_0028_extract"  # "day_2011_09_30_drive_0018_extract"
+    split = "validation"
 
     # Load dataframes
-    dataset = pd.read_hdf(save_path, f"train/{date}/dataset")   # Get the input DataFrame for the given date and drive
-    u_df = pd.read_hdf(save_path, f"train/{date}/w_a_input")    # Get the input DataFrame for the given date and drive
-    time_df = pd.read_hdf(save_path, f"train/{date}/time")      # Get the time vector DataFrame for the given date and drive
-    ground_truth = pd.read_hdf(save_path, f"train/{date}/ground_truth")      # Get the time vector DataFrame for the given date and drive
+    dataset = pd.read_hdf(save_path, f"{split}/{date}/dataset")   # Get the input DataFrame for the given date and drive
+    u_df = pd.read_hdf(save_path, f"{split}/{date}/w_a_input")    # Get the input DataFrame for the given date and drive
+    time_df = pd.read_hdf(save_path, f"{split}/{date}/time")      # Get the time vector DataFrame for the given date and drive
+    ground_truth = pd.read_hdf(save_path, f"{split}/{date}/ground_truth")      # Get the time vector DataFrame for the given date and drive
     X_gt = ground_truth[['x']].values
     Y_gt = ground_truth[['y']].values
 
