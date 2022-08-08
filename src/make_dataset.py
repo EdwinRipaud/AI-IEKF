@@ -181,13 +181,6 @@ class BaseDataset:
                     Rot_gt.append(rot.as_matrix())  # Set initial car orientation
                 gt_df['rot_matrix'] = Rot_gt
 
-                # Compare Martin's methode with the current method, values are identical, so I use my methode which is faster
-                # ang_src, p_src = self.pose_from_oxts_packet(dataset)
-                #
-                # gdtf = 140
-                # print(pos_gt[gdtf, :], p_src[gdtf, :])
-                # print(dataset[['roll', 'pitch', 'yaw']].values[gdtf, :], ang_src[gdtf, :])
-
                 time_df = dataset[['time']].copy()                                                                      # DataFrame containing the time vector
                 w_a_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()                                           # DataFrame containing the input for the training, [gyro, accel]
 
@@ -249,78 +242,6 @@ class BaseDataset:
         ids = diff_idx[argmax_diff_idx:argmax_diff_idx + 2]
         ids[0] += 1
         return df.iloc[ids[0]:ids[1], :]
-
-    ####################################################################################################################
-    # méthode de Martin BROSSARD pour avoir la position et l'angle de la véritée terrain
-    @staticmethod
-    def rotx(t):
-        """Rotation about the x-axis."""
-        c = np.cos(t)
-        s = np.sin(t)
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-
-    @staticmethod
-    def roty(t):
-        """Rotation about the y-axis."""
-        c = np.cos(t)
-        s = np.sin(t)
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-
-    @staticmethod
-    def rotz(t):
-        """Rotation about the z-axis."""
-        c = np.cos(t)
-        s = np.sin(t)
-        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-
-    @staticmethod
-    def to_rpy(Rot):
-        pitch = np.arctan2(-Rot[2, 0], np.sqrt(Rot[0, 0]**2 + Rot[1, 0]**2))
-
-        if np.isclose(pitch, np.pi / 2.):
-            yaw = 0.
-            roll = np.arctan2(Rot[0, 1], Rot[1, 1])
-        elif np.isclose(pitch, -np.pi / 2.):
-            yaw = 0.
-            roll = -np.arctan2(Rot[0, 1], Rot[1, 1])
-        else:
-            sec_pitch = 1. / np.cos(pitch)
-            yaw = np.arctan2(Rot[1, 0] * sec_pitch,
-                             Rot[0, 0] * sec_pitch)
-            roll = np.arctan2(Rot[2, 1] * sec_pitch,
-                              Rot[2, 2] * sec_pitch)
-        return np.array([roll, pitch, yaw])
-
-    def pose_from_oxts_packet(self, df):
-        """Helper method to compute a SE(3) pose matrix from an OXTS packet.
-        """
-        scale = None
-        N = df.shape[0]
-        t = np.zeros((N, 3))
-        ang = np.zeros((N, 3))
-        for i in range(N):
-            df_ = df.iloc[i, :]
-            if scale is None:
-                scale = np.cos(df_.lat * np.pi / 180.)
-
-            er = 6378137.  # earth radius (approx.) in meters
-
-            # Use a Mercator projection to get the translation vector
-            tx = scale * df_.lon * np.pi * er / 180.
-            ty = scale * er * np.log(np.tan((90. + df_.lat) * np.pi / 360.))
-            tz = df_.alt
-            t[i, :] = np.array([tx, ty, tz])
-
-            # Use the Euler angles to get the rotation matrix
-            Rx = self.rotx(df_.roll)
-            Ry = self.roty(df_.pitch)
-            Rz = self.rotz(df_.yaw)
-            R = Rz.dot(Ry.dot(Rx))
-            ang[i, :] = self.to_rpy(R)
-
-            # Combine the translation and rotation into a homogeneous transform
-        return ang, t - np.ones((t.shape[0], 1)) @ t[0][np.newaxis]
-    ####################################################################################################################
 
 
 # #### - Main - #### #
