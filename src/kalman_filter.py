@@ -124,9 +124,11 @@ class IEKF:
         measurements_covs = self.z_to_cov(z_covs)
 
         for i in range(1, N):
-            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.propagate(Rot[i-1], v[i-1], p[i-1], b_omega[i-1], b_acc[i-1], Rot_c_i[i-1], t_c_i[i-1], P, u[i], dt[i-1])
+            Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = \
+                self.propagate(Rot[i - 1], v[i - 1], p[i - 1], b_omega[i - 1], b_acc[i - 1], Rot_c_i[i - 1], t_c_i[i - 1], P, u[i], dt[i - 1])
 
-            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = self.update(Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P, u[i], measurements_covs[i])
+            Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = \
+                self.update(Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i, u[i], measurements_covs[i])
             # correct numerical error every second
             if i % self.n_normalize_rot == 0:
                 Rot[i] = self.normalize_rot(Rot[i])
@@ -165,7 +167,6 @@ class IEKF:
         measurements_covs = self.z_to_cov(z_covs)
 
         for i in range(1, N):
-            ti = time.time_ns()
             Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = \
                 self.propagate(Rot[i - 1], v[i - 1], p[i - 1], b_omega[i - 1], b_acc[i - 1], Rot_c_i[i - 1], t_c_i[i - 1], P, u[i], dt[i - 1])
 
@@ -370,27 +371,24 @@ if __name__ == '__main__':
     save_path = "../data/processed/dataset.h5"                                      # Path to the .h5 dataset
 
     hdf = h5py.File(save_path, 'r')                                                 # Read the .h5 file
-    hdf_key = list(hdf.keys())                                                      # Get the keys
-    print(hdf_key)
-    seq = hdf.get(list(hdf.keys())[0])                                              # Get the subfolder in the .h5 for the given date
-    seq_key = list(seq.keys())                                                      # Get the keys for the the given date
-    print(seq_key)
-    seq_df = seq.get(list(seq.keys())[0])                                              # Get the subfolder in the .h5 for the given date
-    seq_df_key = list(seq_df.keys())                                                      # Get the keys for the the given date
-    print(seq_df_key)
 
-    date = "day_2011_09_30_drive_0028_extract"
+    # check the dataset architecture
+    def get_all(name):
+        if not ("/axis" in name or "/block" in name):
+            print(name)
+    # print(hdf.visit(get_all))
+
+    date = "day_2011_09_30_drive_0033_extract"
     split = "validation"
     # date = "day_2011_09_30_drive_0018_extract"
     # split = "train"
 
     # Load dataframes
-    dataset = pd.read_hdf(save_path, f"{split}/{date}/dataset")   # Get the input DataFrame for the given date and drive
-    u_df = pd.read_hdf(save_path, f"{split}/{date}/u_input")    # Get the input DataFrame for the given date and drive
-    time_df = pd.read_hdf(save_path, f"{split}/{date}/time")      # Get the time vector DataFrame for the given date and drive
-    ground_truth = pd.read_hdf(save_path, f"{split}/{date}/ground_truth")      # Get the time vector DataFrame for the given date and drive
-    X_gt = ground_truth[['x']].values
-    Y_gt = ground_truth[['y']].values
+    dataset = pd.read_hdf(save_path, f"full_datset/{date}")   # Get the input DataFrame for the given date and drive
+    u_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()
+    time_df = dataset[['time']].copy()
+    X_gt = dataset[['pose_x']].values
+    Y_gt = dataset[['pose_y']].values
 
     # Export the values to an np.array
     u = u_df.values
@@ -407,18 +405,19 @@ if __name__ == '__main__':
     plt.plot(p[:, 0], p[:, 1], 'g-.')
     plt.axis('equal')
 
+    # ## - EVO library transformation for RPE evaluation - ## #
     from evo.core import metrics
     from evo.core import lie_algebra as lie
     from evo.core.trajectory import PosePath3D
-    rpe_metric = metrics.RPE(pose_relation=metrics.PoseRelation.rotation_part,
+    rpe_metric = metrics.RPE(pose_relation=metrics.PoseRelation.translation_part,
                              delta=10, delta_unit=metrics.Unit.frames,
                              all_pairs=False)
-    gt_rot = ground_truth['rot_matrix'].values
-    gt_pose = ground_truth[['x', 'y', 'z']].values
+    gt_rot = dataset['rot_matrix'].values
+    gt_pose = dataset[['pose_x', 'pose_y', 'pose_z']].values
     se3_pose_gt = []
     se3_pose = []
 
-    for i in range(ground_truth['rot_matrix'].shape[0]):
+    for i in range(dataset['rot_matrix'].shape[0]):
         se3_pose_gt.append(lie.se3(gt_rot[i], gt_pose[i, :]))
         se3_pose.append(lie.se3(Rot[i], p[i, :]))
 
