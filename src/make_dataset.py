@@ -8,6 +8,7 @@ import argparse
 import datetime
 import warnings
 import random
+import torch
 import glob
 import time
 import os
@@ -30,6 +31,43 @@ def timming(function):
         cprint(f"Function: {function.__name__}; Execution time: {dt} {unit[c]}", 'grey')
         return result
     return wrapper
+
+
+# #### - Function - #### #
+def compute_delta_p(Rot, p):
+    """
+    Compute delta_p for Relative Position Error
+    """
+    list_rpe = [[], [], []]                                         # [idx_0, idx_end, pose_delta_p]
+
+    Rot = Rot[::10]                                                 # sub-sample at 10 Hz
+    Rot = Rot.cpu()
+    p = p[::10]                                                     # sub-sample at 10 Hz
+    p = p.cpu()
+
+    step_size = 10                                                  # every second, 10 sub-samples = 1s
+    distances = np.zeros(p.shape[0])
+    # this must be ground truth
+    dp = p[1:] - p[:-1]                                             # delta of position at each sub-sample
+    distances[1:] = dp.norm(dim=1).cumsum(0).numpy()                # cumulative sum of delta position to get the total length
+
+    seq_lengths = [100, 200, 300, 400, 500, 600, 700, 800]
+    k_max = int(Rot.shape[0] / step_size) - 1
+
+    for k in range(0, k_max):  # each k represent 1s pass in the dataset
+        idx_0 = k * step_size  # index of the k^th second in the sub-sample sequence
+        for seq_length in seq_lengths:  # run through [100, ..., 800]
+            if seq_length + distances[idx_0] > distances[-1]:  # go to the next iteration if left less than 'seq_length' to the end of the sequence distance
+                continue
+            idx_shift = np.searchsorted(distances[idx_0:], distances[idx_0] + seq_length)  # get number of sample that represent a distance of 'seq_length'
+            idx_end = idx_0 + idx_shift  # index of the end of 'seq_length' length from k^th seconde
+            list_rpe[0].append(idx_0)
+            list_rpe[1].append(idx_end)
+        idxs_0 = list_rpe[0]  # store the indices of each start where left [100, ..., 800]m
+        idxs_end = list_rpe[1]  # store the indices of each end where left [100, ..., 800]m
+        delta_p = Rot[idxs_0].transpose(-1, -2).matmul(((p[idxs_end] - p[idxs_0]).float()).unsqueeze(-1)).squeeze()  # calcul the cartesian coordinates from the initial position for each set of [100, ..., 800]
+        list_rpe[2] = delta_p.numpy()
+    return list_rpe
 
 
 # #### - Class - #### #
@@ -148,12 +186,16 @@ class BaseDataset:
                         gt_df.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/ground_truth")
                         time_df.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/time")
                         init_cond_df.iloc[N, :].to_hdf(hdf_path, key=f"{base_key}/init_cond")
+                        p_gt = torch.tensor(dataset.iloc[N:N+self.sequence_length, :].loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
+                        ang_gt = torch.tensor(list(dataset.iloc[N:N+self.sequence_length, :]['rot_matrix'].values), dtype=torch.float32)
+                        list_RPE = pd.DataFrame(compute_delta_p(ang_gt, p_gt), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
+                        list_RPE.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/list_RPE")
 
                 if date_dir2 in self.dataset_split['validation']:
                     base_key = f"ETV_dataset/validation/day_{date_dir2}"
 
                     init_cond_df = dataset[["ve", "vn", "vu", "roll", "pitch", "yaw"]].copy()
-                    init_cond_df.to_hdf(hdf_path, key=f"{base_key}/init_cond")
+                    init_cond_df.iloc[0, :].to_hdf(hdf_path, key=f"{base_key}/init_cond")
 
                     u_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()
                     u_df.to_hdf(hdf_path, key=f"{base_key}/input")
@@ -168,7 +210,7 @@ class BaseDataset:
                     base_key = f"ETV_dataset/test/day_{date_dir2}"
 
                     init_cond_df = dataset[["ve", "vn", "vu", "roll", "pitch", "yaw"]].copy()
-                    init_cond_df.to_hdf(hdf_path, key=f"{base_key}/init_cond")
+                    init_cond_df.iloc[0, :].to_hdf(hdf_path, key=f"{base_key}/init_cond")
 
                     u_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()
                     u_df.to_hdf(hdf_path, key=f"{base_key}/input")
@@ -244,6 +286,11 @@ class BaseDataset:
             rot = scipyRot.from_euler('xyz', [roll[i], pitch[i], yaw[i]])
             Rot_gt.append(rot.as_matrix())  # Set initial car orientation
         dataset['rot_matrix'] = Rot_gt
+
+        p_gt = torch.tensor(dataset.loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
+        ang_gt = torch.tensor(list(dataset['rot_matrix'].values), dtype=torch.float32)
+        list_RPE = pd.DataFrame(compute_delta_p(ang_gt, p_gt), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
+        dataset.append(list_RPE, ignore_index=True)
         return dataset.copy()
 
     def oxts_packets_2_dataframe(self, oxts_files):
