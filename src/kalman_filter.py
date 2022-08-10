@@ -374,7 +374,7 @@ if __name__ == '__main__':
 
     # check the dataset architecture
     def get_all(name):
-        if not ("/axis" in name or "/block" in name):
+        if not ("/axis" in name or "/block" in name or "/index" in name or "/value" in name):
             print(name)
     # print(hdf.visit(get_all))
 
@@ -405,52 +405,11 @@ if __name__ == '__main__':
     plt.plot(p[:, 0], p[:, 1], 'g-.')
     plt.axis('equal')
 
-    # ## - EVO library transformation for RPE evaluation - ## #
-    from evo.core import metrics
-    from evo.core import lie_algebra as lie
-    from evo.core.trajectory import PosePath3D
-    rpe_metric = metrics.RPE(pose_relation=metrics.PoseRelation.translation_part,
-                             delta=10, delta_unit=metrics.Unit.frames,
-                             all_pairs=False)
-    gt_rot = dataset['rot_matrix'].values
-    gt_pose = dataset[['pose_x', 'pose_y', 'pose_z']].values
-    se3_pose_gt = []
-    se3_pose = []
-
-    for i in range(dataset['rot_matrix'].shape[0]):
-        se3_pose_gt.append(lie.se3(gt_rot[i], gt_pose[i, :]))
-        se3_pose.append(lie.se3(Rot[i], p[i, :]))
-
-    gt_path3D = PosePath3D(poses_se3=se3_pose_gt)
-    kf_path3D = PosePath3D(poses_se3=se3_pose)
-    print(gt_path3D)
-    print(kf_path3D)
-
-    rpe_metric.process_data((gt_path3D, kf_path3D))
-
-    rpe_stats = rpe_metric.get_all_statistics()
-    print(rpe_stats)
-
-    import copy
-    from evo.tools import plot
-    traj_ref_plot = copy.deepcopy(gt_path3D)
-    traj_est_plot = copy.deepcopy(kf_path3D)
-    traj_ref_plot.reduce_to_ids(rpe_metric.delta_ids)
-    traj_est_plot.reduce_to_ids(rpe_metric.delta_ids)
-    second_from_start = t[:-1]-t[0]
-    fig = plt.figure()
-    plot.error_array(fig.gca(), rpe_metric.error,  # x_array=second_from_start,
-                     statistics={s:v for s,v in rpe_stats.items() if s != "sse"},
-                     name="RPE", title="RPE w.r.t " + rpe_metric.pose_relation.value, xlabel="$t$ (s)")
-
-    plot_mode = plot.PlotMode.xy
-    fig = plt.figure()
-    ax = plot.prepare_axis(fig, plot_mode)
-    plot.traj(ax, plot_mode, traj_ref_plot, '--', "grey", "reference")
-    plot.traj_colormap(ax, traj_est_plot, rpe_metric.error, plot_mode, min_map=rpe_stats['min'], max_map=rpe_stats['max'])
-    # plot.draw_correspondence_edges(ax, traj_est_plot.reduce_to_ids([i for i in range(0, len(se3_pose), 500)]),
-    #                                traj_ref_plot.reduce_to_ids([i for i in range(0, len(se3_pose), 500)]), plot_mode)
-    ax.legend()
+    import utils
+    ground_t = utils.df_to_PosePath3D(dataset['rot_matrix'].values, dataset[['pose_x', 'pose_y', 'pose_z']].values)
+    kalman_t = utils.df_to_PosePath3D(Rot, p)
+    print(utils.get_APE(ground_t, kalman_t).get_all_statistics())
+    utils.plot_APE(ground_t, kalman_t)
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
