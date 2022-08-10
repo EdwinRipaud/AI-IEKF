@@ -12,7 +12,6 @@ import h5py
 import time
 import os
 
-
 # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'                   # Set the environement variable CUBLAS_WORKSPACE_CONFIG to ':4096:8' for the use of deterministic algorithms in convolution layers
 
 
@@ -43,6 +42,7 @@ def create_folder(directory):
     except OSError:
         print ('Error: Creating directory. ' + directory)
 
+
 def normalize(u):
     std = u.std(0, unbiased=True)
     mean = u.mean(0)
@@ -50,49 +50,13 @@ def normalize(u):
     return u_norm
 
 
-def compute_delta_p(Rot, p):
-    """
-    Compute delta_p for Relative Position Error
-    """
-    list_rpe = [[], [], []]                                         # [idx_0, idx_end, pose_delta_p]
-
-    Rot = Rot[::10]                                                 # sub-sample at 10 Hz
-    Rot = Rot.cpu()
-    p = p[::10]                                                     # sub-sample at 10 Hz
-    p = p.cpu()
-
-    step_size = 10                                                  # every second, 10 sub-samples = 1s
-    distances = np.zeros(p.shape[0])
-    # this must be ground truth
-    dp = p[1:] - p[:-1]                                             # delta of position at each sub-sample
-    distances[1:] = dp.norm(dim=1).cumsum(0).numpy()                # cumulative sum of delta position to get the total length
-
-    seq_lengths = [100, 200, 300, 400, 500, 600, 700, 800]
-    k_max = int(Rot.shape[0] / step_size) - 1
-
-    for k in range(0, k_max):  # each k represent 1s pass in the dataset
-        idx_0 = k * step_size  # index of the k^th second in the sub-sample sequence
-        for seq_length in seq_lengths:  # run through [100, ..., 800]
-            if seq_length + distances[idx_0] > distances[-1]:  # go to the next iteration if left less than 'seq_length' to the end of the sequence distance
-                continue
-            idx_shift = np.searchsorted(distances[idx_0:], distances[idx_0] + seq_length)  # get number of sample that represent a distance of 'seq_length'
-            idx_end = idx_0 + idx_shift  # index of the end of 'seq_length' length from k^th seconde
-            list_rpe[0].append(idx_0)
-            list_rpe[1].append(idx_end)
-        idxs_0 = list_rpe[0]  # store the indices of each start where left [100, ..., 800]m
-        idxs_end = list_rpe[1]  # store the indices of each end where left [100, ..., 800]m
-        delta_p = Rot[idxs_0].transpose(-1, -2).matmul(((p[idxs_end] - p[idxs_0]).float()).unsqueeze(-1)).squeeze()  # calcul the cartesian coordinates from the initial position for each set of [100, ..., 800]
-        list_rpe[2] = delta_p.numpy()
-    return list_rpe
-
-
-def precompute_lost(Rot, p, list_rpe, N0):
+def precompute_lost(Rot, p, list_rpe):
     # compute the relative translational error
     N = p.shape[0]
     Rot_10_Hz = Rot[::10]
     p_10_Hz = p[::10]
-    idxs_0 = torch.Tensor(np.array(list_rpe.loc[:, 'idx_0'].values, dtype=float)).long() - int(N0 / 10)
-    idxs_end = torch.Tensor(np.array(list_rpe.loc[:, 'idx_end'].values, dtype=float)).long() - int(N0 / 10)
+    idxs_0 = torch.Tensor(np.array(list_rpe.loc[:, 'idx_0'].values, dtype=float)).long()
+    idxs_end = torch.Tensor(np.array(list_rpe.loc[:, 'idx_end'].values, dtype=float)).long()
     delta_p_gt = torch.Tensor(np.vstack(list_rpe.loc[:, 'pose_delta_p'].values))
     idxs = torch.Tensor(idxs_0.shape[0]).bool()
     idxs[:] = 1
@@ -111,112 +75,135 @@ def precompute_lost(Rot, p, list_rpe, N0):
         return iekf_pre_loss.to(DEVICE), gt_pre_loss.to(DEVICE)
 
 
+@timming
+def rot_pose_to_se3(rot, pose):
+    """
+    Transform rotation matrix and position to SE3 matrix
+    :param rot: torch tensor or numpy array
+    :param pose: torch tensor or numpy array
+    :return:
+    """
+    se3 = []
+    if type(pose).__module__ == np.__name__:
+        pose = torch.tensor(pose)
+
+    for i in range(pose.shape[0]):
+        if type(rot[i]).__module__ == np.__name__:
+            r = torch.tensor(rot[i][0])
+        else:
+            r = rot[i]
+        M = torch.eye(4)
+        M[:3, :3] = r
+        M[:3, 3] = pose[i]
+        se3.append(M)
+    return se3
+
+
 # #### - Class - #### #
 class KittiDataset(Dataset):
-    def __init__(self, hdf_path, seq_length, split, rng):
-        self.rng = rng                                              # Set a Random Number Generator
-
+    def __init__(self, hdf_path, split):
         self.hdf_path = hdf_path
-        self.seq_length = seq_length
         self.hdf = h5py.File(self.hdf_path, 'r')                    # Read the .h5 file
         self.split = split
 
-        self.init = pd.DataFrame()
-        self.time = pd.DataFrame()
-        self.U = pd.DataFrame()
-        self.GT = pd.DataFrame()
-        self.list_RPE = pd.DataFrame()
-
-        self.h5_to_df()
-
     def __getitem__(self, item):
-        v_mes0 = self.init.loc[:, item].loc[:10, ["ve", "vn", "vu"]].values[0, :]
-        ang0 = self.init.loc[:, item].loc[:10, ["roll", "pitch", "yaw"]].values[0, :]
-        time = self.time.loc[:, item]
-        time_t = time[~time['time'].isna()].to_numpy()
-        U = self.U.loc[:, item]
-        U_t = torch.tensor(U[~U['ax'].isna()].to_numpy(), dtype=torch.float32)
-        GT = self.GT.loc[:, item]
-        GT_pose_t = torch.tensor(GT[~GT['x'].isna()].loc[:, ['x', 'y', 'z']].to_numpy(), dtype=torch.float32)
-        GT_rot_t = torch.tensor(GT[~GT['x'].isna()].loc[:, 'rot_matrix'], dtype=torch.float32)
-        RPE = self.list_RPE.loc[:, item]
-        list_rpe = RPE[~RPE[RPE.columns[0]].isna()]
-        return (v_mes0, ang0), time_t, U_t, (GT_pose_t, GT_rot_t), list_rpe
+        dataset = pd.DataFrame(pd.read_hdf(self.hdf_path, f"full_datset/{item}"))
+        time_vec = torch.tensor(dataset[['time']].to_numpy(), dtype=torch.float32)
+        u = torch.tensor(dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].to_numpy(), dtype=torch.float32)
+        p_gt = torch.tensor(dataset.loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
+        ang_gt = torch.tensor(dataset.loc[:, 'rot_matrix'], dtype=torch.float32)
+        v_mes0 = dataset[["ve", "vn", "vu"]].copy().iloc[0, :].values
+        ang0 = dataset[["roll", "pitch", "yaw"]].copy().iloc[0, :].values
+        list_rpe = dataset.loc[:, ['idx_0', 'idx_end', 'pose_delta_p']]
+        return {"init_cond": (v_mes0, ang0), "time": time_vec, "input": u, "ground_truth": (p_gt, ang_gt), "liste_RPE": list_rpe}
 
-    def __len__(self):
-        return len(list(self.hdf.get(self.split)))
+    def len(self):
+        return len(list(self.hdf.get(f"ETV_dataset/{self.split}")))
+
+    def len_batch(self):
+        if self.split == "train":
+            batch = self.hdf.get(f"ETV_dataset/{self.split}")
+            return len(list(batch.get(list(batch.keys())[0])))
+        else:
+            return 1
+
+    def len_seq(self):
+        batch = self.hdf.get(f"ETV_dataset/{self.split}")
+        seq = pd.read_hdf(self.hdf_path, f"ETV_dataset/{self.split}/{list(batch.keys())[0]}/batch_1/time")
+        return seq.shape[0]
+
+    def seq_name(self):
+        batch = self.hdf.get(f"ETV_dataset/{self.split}")
+        for name in list(batch.keys()):
+            yield name
 
     def __iter__(self):
-        seqs = self.hdf.get(self.split)
-        for name in list(seqs.keys()):
-            _, t, u, gt, list_rpe = self[name]
-            N = self.get_start_and_end(t)
-            v_mes0 = self.init.loc[:, name].loc[:, ["ve", "vn", "vu"]].values[N[0], :]  # Get the velocity at the beginning of the sub-sequence
-            ang0 = self.init.loc[:, name].loc[:, ["roll", "pitch", "yaw"]].values[N[0], :]
-            yield name, ((v_mes0, ang0), t[N[0]:N[1], :], u[N[0]:N[1], :], (gt[0][N[0]:N[1], :], gt[1][N[0]:N[1], :])), list_rpe, N
-
-    def h5_to_df(self):
-        seqs = self.hdf.get(self.split)
-        # print(f"Train:\n\t{list(seqs.keys())}")
-        dict_u = {}
-        dict_gt = {}
-        dict_time = {}
-        dict_init = {}
-        dict_rpe = {}
-        for name in list(seqs.keys()):
-            # get initial condictions
-            init_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/dataset")).loc[:, ["ve", "vn", "vu", "roll", "pitch", "yaw"]]
-            dict_init[f"{name}"] = init_df  # Add the DataFrame to the dictionary
-
-            # get time vector
-            time_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/time"))
-            dict_time[f"{name}"] = time_df  # Add the DataFrame to the dictionary
-
-            # get IMU measurment + time
-            u_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/w_a_input"))  # Get the input DataFrame for the given date and drive
-            dict_u[f"{name}"] = u_df  # Add the DataFrame to the dictionary
-
-            # get Ground_Truth
-            gt_df = pd.DataFrame(pd.read_hdf(self.hdf_path, f"{self.split}/{name}/ground_truth"))  # Get the input DataFrame for the given date and drive
-            dict_gt[f"{name}"] = gt_df  # Add the DataFrame to the dictionary
-
-            gt_pose = torch.tensor(gt_df.loc[:, ['x', 'y', 'z']].to_numpy(), dtype=torch.float32)
-            gt_rot = torch.tensor(gt_df.loc[:, 'rot_matrix'], dtype=torch.float32)
-            # dict_rpe[f"{name}"] = pd.DataFrame(compute_delta_p(gt_rot, gt_pose))
-            dict_rpe[f"{name}"] = pd.DataFrame(compute_delta_p(gt_rot, gt_pose), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
-
-        self.init = pd.concat(dict_init, axis=1)            # Create DataFrame from dictionary, with index as dict keys
-        self.time = pd.concat(dict_time, axis=1)            # Create DataFrame from dictionary, with index as dict keys
-        self.U = pd.concat(dict_u, axis=1)                  # Create DataFrame from dictionary, with index as dict keys
-        self.GT = pd.concat(dict_gt, axis=1)                # Create DataFrame from dictionary, with index as dict keys
-        self.list_RPE = pd.concat(dict_rpe, axis=1)        # Create DataFrame from dictionary, with index as dict keys
-
-    def get_start_and_end(self, X):
-        """
-        Generate a random sub-sequence from training dataset with size 'self.seq_length'
-        :return:
-        """
-        if self.split == 'train':
-            N_start = 10 * int(self.rng.integers(low=0, high=(X.shape[0] - self.seq_length)/10, size=1))
-            N_end = N_start + self.seq_length
-        else:
-            N_start = 0
-            N_end = X.shape[0]
-        return N_start, N_end
+        raise NotImplementedError
+        # seqs = self.hdf.get(self.split)
+        # for name in list(seqs.keys()):
+        #     _, t, u, gt, list_rpe = self[name]
+        #     N = self.get_start_and_end(t)
+        #     v_mes0 = self.init.loc[:, name].loc[:, ["ve", "vn", "vu"]].values[N[0], :]  # Get the velocity at the beginning of the sub-sequence
+        #     ang0 = self.init.loc[:, name].loc[:, ["roll", "pitch", "yaw"]].values[N[0], :]
+        #     yield name, ((v_mes0, ang0), t[N[0]:N[1], :], u[N[0]:N[1], :], (gt[0][N[0]:N[1], :], gt[1][N[0]:N[1], :])), list_rpe, N
 
 
 class RMSELoss(torch.nn.Module):
     def __init__(self):
         super(RMSELoss, self).__init__()
 
-    def forward(self, yhat, y):
-        criterion = torch.nn.MSELoss()
-        loss = torch.sqrt(criterion(yhat, y) + 1e-6)
-        return loss
+    def forward(self, kf_rot_p, gt_rot_p):
+        """
+        Compute RMSE of a trajectory relative to the ground truth using the Full Relative Position
+        :param gt_rot_p: (rotation matrix, position) for the Ground-truth trajectory
+        :param kf_rot_p: (rotation matrix, position) for the Kalman trajectory
+        :return:
+        """
+        # uniformise type of inputs
+        rot_gt, pose_gt = gt_rot_p
+        rot_kf, pose_kf = kf_rot_p
+        if type(pose_gt).__module__ == np.__name__:
+            pose_gt = torch.tensor(pose_gt)
+        if type(pose_kf).__module__ == np.__name__:
+            pose_kf = torch.tensor(pose_kf)
+
+        if pose_gt.shape[0] == pose_kf.shape[0]:
+            s_error = torch.zeros((pose_kf.shape[0], 1))
+            for i in range(pose_kf.shape[0]):
+                if type(rot_gt[i]).__module__ == np.__name__:
+                    if rot_gt[i].shape[0] == 1:
+                        r_gt = torch.tensor(rot_gt[i][0])
+                    else:
+                        r_gt = torch.tensor(rot_gt[i])
+                else:
+                    r_gt = rot_gt[i]
+                if type(rot_kf[i]).__module__ == np.__name__:
+                    if rot_kf[i].shape[0] == 1:
+                        r_kf = torch.tensor(rot_kf[i][0])
+                    else:
+                        r_kf = torch.tensor(rot_kf[i])
+                else:
+                    r_kf = rot_kf[i]
+                # Compute SE3 matrix for Ground-truth and Kalman
+                M_gt = torch.eye(4)
+                M_gt[:3, :3] = r_gt
+                M_gt[:3, 3] = pose_gt[i]
+
+                # compute relative se3
+                r_inv = torch.t(r_kf)
+                t_inv = -r_inv.mv(pose_kf[i])
+                M_kf_inv = torch.eye(4)
+                M_kf_inv[:3, :3] = r_inv
+                M_kf_inv[:3, 3] = t_inv
+
+                relative_se3 = M_kf_inv.mm(M_gt)
+                error = torch.linalg.norm(relative_se3-torch.eye(4))
+                s_error[i] = torch.pow(error, 2)
+            return torch.sqrt(torch.mean(s_error)) + 1e-8
 
 
 class CNN(torch.nn.Module):
-    @timming
+    # @timming
     def __init__(self, seq_length):
         super(CNN, self).__init__()
 
@@ -248,7 +235,7 @@ class CNN(torch.nn.Module):
         # torch.nn.init.kaiming_normal_(self.layers[4].weight)
         # torch.nn.init.kaiming_normal_(self.layers[9].weight)
 
-    @timming
+    # @timming
     def forward(self, x):
         conv_in = x.t().unsqueeze(0)
         conv_out = self.conv_layers(conv_in)
@@ -263,75 +250,98 @@ def make_trainning(model, EPOCHS):
     iekf = IEKF()
 
     # #### - Train - #### #
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-8)
 
-    batch_bar = tqdm(total=len(train), unit="batch", desc="Training", leave=False)
+    batch_bar = tqdm(total=train.len(), unit="batch", desc="Training", leave=False)
     epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
 
     train_loss_history = []
     val_loss_history = []
 
     for epoch in range(EPOCHS):
-        train_running_loss = 0.
+        # print(f"Epoch n°{epoch+1}:")
+        train_running_loss = torch.zeros(1)
 
-        model.train()                                               # Make sure gradient tracking is on, and do a pass over the data
+        model.train()                                                   # Make sure gradient tracking is on, and do a pass over the data
         optimizer.zero_grad()
         batch_bar.reset()
+        # print(f"  Training:")
+        for batch_index, drive in enumerate(train.seq_name()):
+            train_running_loss = torch.zeros(1)
+            # print(f"    batch n°{batch_index + 1}: {drive}")
+            for i in range(1, BATCH_SIZE+1):
+                ground_truth = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/ground_truth")
+                pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
+                rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
+                # list_rpe = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/list_RPE")
+                inputs = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/input").to_numpy(), dtype=torch.float32)
+                t = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/time").to_numpy(), dtype=torch.float32)
+                init_cond = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/init_cond").values
 
-        for batch_index, (seq_name, (init_cond, t, inputs, ground_truth), list_rpe, N) in enumerate(train):
-            # print(batch_index, seq_name)
-            # print(init_cond, t.shape, inputs.shape, (ground_truth[0].shape, ground_truth[1].shape))
-            # print(f"Start - end: {N}")
-            inputs_net = inputs.to(DEVICE)
+                inputs_net = inputs.to(DEVICE)
 
-            # with torch.autograd.set_detect_anomaly(True):           # To pointout error in the gradients propagations
-            # Je sais pas s'il faut normalizer l'input car la normalisation va scale down/up des caractéristiques des signaux
-            # ce qui peut fausser l'amplitude de la sortie du CNN
-            # input_net_norm = normalize(inputs_net)                  # Normalize inputs
-            z_cov_net = model.forward(inputs_net)
-            z_cov = z_cov_net.cpu()                                 # Move the CNN result to 'cpu' for Kalman Filter iterations
-            inputs = inputs.cpu()
+                z_cov_net = model.forward(inputs_net)
+                z_cov = z_cov_net.cpu()                                 # Move the CNN result to 'cpu' for Kalman Filter iterations
+                inputs = inputs.cpu()
 
-            Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter, result are already in torch.Tensor
+                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[:3], init_cond[3:])  # Run the training Kalman Filter, result are already in torch.Tensor
 
-            iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
+                # iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe)
+                # loss = criterion(iekf_p_loss, gt_p_loss)                # compute loss
 
-            loss = criterion(iekf_p_loss, gt_p_loss)                # compute loss
-            if not loss.isnan():
-                train_running_loss += loss
+                loss = criterion((rot_mat_gt, pose_gt), (Rot, p))
 
-            batch_bar.set_postfix(train_loss=train_running_loss.item()/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
+                if not loss.isnan():
+                    train_running_loss += loss
+                #     print(f"        sub-seq {i}: loss: {loss}")
+                # else:
+                #     print(f"        sub-seq {i}: loss: Nan")
+
+            batch_bar.set_postfix(mean_batch_loss=train_running_loss.item()/BATCH_SIZE, lr=optimizer.param_groups[0]['lr'])
             batch_bar.update()
 
-        train_running_loss.backward()                               # Calculate gradients
-        optimizer.step()                                            # Adjust learning weights
+            train_running_loss.backward()                                   # Calculate gradients
+        optimizer.step()                                                # Adjust learning weights
 
         train_loss = train_running_loss.item() / batch_index
         train_loss_history.append(train_loss)
         writer.add_scalar('train/loss', train_loss, epoch)
 
-        # #### - Validation - #### #
-        val_running_loss = 0.
-        model.eval()
-        with torch.no_grad():
-            for batch_index, (seq_name, (init_cond, t, inputs, ground_truth), list_rpe, N) in enumerate(validation):
-                inputs_net = inputs.to(DEVICE)
+        if True:
+            # #### - Validation - #### #
+            # print(f"  Validation:")
+            val_running_loss = 0.
+            model.eval()
+            with torch.no_grad():
+                for batch_index, drive in enumerate(validation.seq_name()):
+                    ground_truth = pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/ground_truth")
+                    pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
+                    rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
+                    # list_rpe = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/list_RPE")
+                    inputs = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/input").to_numpy(), dtype=torch.float32)
+                    t = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/time").to_numpy(), dtype=torch.float32)
+                    init_cond = pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/init_cond").values
 
-                z_cov_net = model.forward(inputs_net)
-                z_cov = z_cov_net.cpu()                             # Move the CNN result to 'cpu' for Kalman Filter iterations
-                inputs = inputs.cpu()
+                    inputs_net = inputs.to(DEVICE)
 
-                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[0], init_cond[1])  # Run the training Kalman Filter, result are already in torch.Tensor
+                    z_cov_net = model.forward(inputs_net)
+                    z_cov = z_cov_net.cpu()                             # Move the CNN result to 'cpu' for Kalman Filter iterations
+                    inputs = inputs.cpu()
 
-                iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
+                    Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[:3], init_cond[3:])  # Run the training Kalman Filter, result are already in torch.Tensor
 
-                loss = criterion(iekf_p_loss, gt_p_loss)            # compute loss
+                    # iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
 
-                val_running_loss += loss.item()
-            val_loss = val_running_loss / (batch_index+1)
-            val_loss_history.append(val_loss)
-            writer.add_scalar('validation/loss', val_loss, epoch)
+                    # loss = criterion(iekf_p_loss, gt_p_loss)            # compute loss
+                    loss = criterion((rot_mat_gt, pose_gt), (Rot, p))
 
+                    val_running_loss += loss.item()
+                val_loss = val_running_loss / (batch_index+1)
+                val_loss_history.append(val_loss)
+                writer.add_scalar('validation/loss', val_loss, epoch)
+                # print(f"    Loss: {val_loss}")
+
+        # print(f"")
         epoch_bar.set_postfix(train_loss=train_loss, val_loss=val_loss, lr=optimizer.param_groups[0]['lr'])
         epoch_bar.update()
     return train_loss_history, val_loss_history
@@ -355,41 +365,48 @@ if __name__ == '__main__':
     parser.add_argument(
         "-e", "--epochs", type=int, required=True, help="Number of epochs to train the model. Ex: --epochs 400"
     )
-    parser.add_argument(
-        "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
-    )
+    # parser.add_argument(
+    #     "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
+    # )
+    # parser.add_argument(
+    #     "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 32"
+    # )
 
     args = parser.parse_args()
 
-    EPOCHS = args.epochs
-    DEVICE = args.device
-    SEQ_LEN = args.seq
-
-    print(f"Epochs: {EPOCHS}; Device: {DEVICE}; Sequence length: {SEQ_LEN}")
-
-    save_path = "../data/processed/dataset.h5"                      # Path to the .h5 dataset
+    save_path = "../data/processed/dataset.h5"                                  # Path to the .h5 dataset
     run_time = time.strftime('%Y%m%d_%H%M%S')
     tensorboard_path = f"../runs/{run_time}"                                    # Path to the TensorBoard directory
 
-    train = KittiDataset(save_path, SEQ_LEN, 'train', rng)
-    validation = KittiDataset(save_path, SEQ_LEN, 'validation', rng)
+    train = KittiDataset(save_path, 'train')
+    validation = KittiDataset(save_path, 'validation')
 
-    # Model
-    model = CNN(SEQ_LEN).to(DEVICE)
+    EPOCHS = args.epochs
+    DEVICE = args.device
+    SEQ_LEN = train.len_seq()  # args.seq
+    BATCH_SIZE = 8  # train.len_batch()  # args.batch
 
-    # # test the model and fixe seed generation
-    # test_input = torch.rand((2000, 6)).to(DEVICE)
-    # prediction = model(test_input)
-    # print(prediction)
+    print(f"Epochs: {EPOCHS}; Device: {DEVICE}; Sequence length: {SEQ_LEN}")
     # exit()
 
-    # Loss
-    criterion = torch.nn.MSELoss().to(DEVICE)
+    if True:
+        # Model
+        model = CNN(SEQ_LEN).to(DEVICE)
 
-    train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
+        # # test the model and fixe seed generation
+        # test_input = torch.rand((2000, 6)).to(DEVICE)
+        # prediction = model(test_input)
+        # print(prediction)
+        # exit()
 
-    create_folder(f"../models/{run_time}")
-    torch.save(model, f"../models/{run_time}/CNN.pt")
+        # Loss
+        # criterion = torch.nn.MSELoss().to(DEVICE)
+        criterion = RMSELoss().to(DEVICE)
+
+        train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
+
+        create_folder(f"../models/{run_time}")
+        torch.save(model, f"../models/{run_time}/CNN.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 

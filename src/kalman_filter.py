@@ -378,10 +378,8 @@ if __name__ == '__main__':
             print(name)
     # print(hdf.visit(get_all))
 
-    date = "day_2011_09_30_drive_0033_extract"
-    split = "validation"
-    # date = "day_2011_09_30_drive_0018_extract"
-    # split = "train"
+    # date = "day_2011_09_30_drive_0033_extract"
+    date = "day_2011_09_30_drive_0018_extract"
 
     # Load dataframes
     dataset = pd.read_hdf(save_path, f"full_datset/{date}")   # Get the input DataFrame for the given date and drive
@@ -409,6 +407,11 @@ if __name__ == '__main__':
     ground_t = utils.df_to_PosePath3D(dataset['rot_matrix'].values, dataset[['pose_x', 'pose_y', 'pose_z']].values)
     kalman_t = utils.df_to_PosePath3D(Rot, p)
     print(utils.get_APE(ground_t, kalman_t).get_all_statistics())
+    print(utils.torch_full_transformation_rmse(
+        (dataset['rot_matrix'].values, dataset[['pose_x', 'pose_y', 'pose_z']].values),
+        (Rot, p)
+    ))
+
     utils.plot_APE(ground_t, kalman_t)
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")

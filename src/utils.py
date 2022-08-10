@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from evo.core import metrics
 from termcolor import cprint
 from evo.tools import plot
+import numpy as np
+import torch
 import copy
 import time
 import evo
@@ -98,6 +100,7 @@ def plot_APE(ground_truth, kalman, corr_edges=False):
         # plot.draw_correspondence_edges(ax, kf_pose3D.reduce_to_ids([i for i in range(0, N, int(N/100))]),
         #                                gt_pose3D.reduce_to_ids([i for i in range(0, N, int(N/100))]), plot_mode)
     ax.legend()
+    return
 
 
 def get_RPE(ground_truth, kalman):
@@ -167,6 +170,58 @@ def plot_RPE(ground_truth, kalman, corr_edges=False):
         # plot.draw_correspondence_edges(ax, traj_est_plot.reduce_to_ids([i for i in range(0, N, int(N/100))]),
         #                                traj_ref_plot.reduce_to_ids([i for i in range(0, N, int(N/100))]), plot_mode)
     ax.legend()
+    return
+
+
+def torch_full_transformation_rmse(gt_rot_p, kf_rot_p):
+    """
+    Compute RMSE of a trajectory relative to the ground truth using the Full Relative Position
+    :param gt_rot_p: (rotation matrix, position) for the Ground-truth trajectory
+    :param kf_rot_p: (rotation matrix, position) for the Kalman trajectory
+    :return:
+    """
+    # uniformise type of inputs
+    rot_gt, pose_gt = gt_rot_p
+    rot_kf, pose_kf = kf_rot_p
+    if type(pose_gt).__module__ == np.__name__:
+        pose_gt = torch.tensor(pose_gt)
+    if type(pose_kf).__module__ == np.__name__:
+        pose_kf = torch.tensor(pose_kf)
+
+    if pose_gt.shape[0] == pose_kf.shape[0]:
+        E = []
+        for i in range(pose_kf.shape[0]):
+            if type(rot_gt[i]).__module__ == np.__name__:
+                if rot_gt[i].shape[0] == 1:
+                    r_gt = torch.tensor(rot_gt[i][0])
+                else:
+                    r_gt = torch.tensor(rot_gt[i])
+            else:
+                r_gt = rot_gt[i]
+            if type(rot_kf[i]).__module__ == np.__name__:
+                if rot_kf[i].shape[0] == 1:
+                    r_kf = torch.tensor(rot_kf[i][0])
+                else:
+                    r_kf = torch.tensor(rot_kf[i])
+            else:
+                r_kf = rot_kf[i]
+            # Compute SE3 matrix for Ground-truth and Kalman
+            M_gt = torch.eye(4)
+            M_gt[:3, :3] = r_gt
+            M_gt[:3, 3] = pose_gt[i]
+
+            # compute relative se3
+            r_inv = torch.t(r_kf)
+            t_inv = -r_inv.mv(pose_kf[i])
+            M_kf_inv = torch.eye(4)
+            M_kf_inv[:3, :3] = r_inv
+            M_kf_inv[:3, 3] = t_inv
+
+            relative_se3 = M_kf_inv.mm(M_gt)
+            error = torch.linalg.norm(relative_se3-torch.eye(4))
+            E.append(error)
+        squered_error = torch.pow(torch.tensor(E), 2)
+        return torch.sqrt(torch.mean(squered_error)) + 1e-8
 
 
 # #### - Main - #### #
