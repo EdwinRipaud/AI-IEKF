@@ -414,6 +414,12 @@ if __name__ == '__main__':
 
     utils.plot_APE(ground_t, kalman_t)
 
+    Rot2, _, p2, _, _, _, _ = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[0, 0]], v_mes0, ang0)
+    kalman2_t = utils.df_to_PosePath3D(Rot2, p2)
+    print(utils.get_APE(ground_t, kalman2_t).get_all_statistics())
+
+    utils.plot_multiple(ground_t, [kalman_t, kalman2_t])
+
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
     plt.show()
