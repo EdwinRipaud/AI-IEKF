@@ -43,62 +43,6 @@ def create_folder(directory):
         print ('Error: Creating directory. ' + directory)
 
 
-def normalize(u):
-    std = u.std(0, unbiased=True)
-    mean = u.mean(0)
-    u_norm = (u-mean)/std
-    return u_norm
-
-
-def precompute_lost(Rot, p, list_rpe):
-    # compute the relative translational error
-    N = p.shape[0]
-    Rot_10_Hz = Rot[::10]
-    p_10_Hz = p[::10]
-    idxs_0 = torch.Tensor(np.array(list_rpe.loc[:, 'idx_0'].values, dtype=float)).long()
-    idxs_end = torch.Tensor(np.array(list_rpe.loc[:, 'idx_end'].values, dtype=float)).long()
-    delta_p_gt = torch.Tensor(np.vstack(list_rpe.loc[:, 'pose_delta_p'].values))
-    idxs = torch.Tensor(idxs_0.shape[0]).bool()
-    idxs[:] = 1
-    idxs[idxs_0 < 0] = 0
-    idxs[idxs_end >= int(N / 10)] = 0
-    delta_p_gt = delta_p_gt[idxs]
-    idxs_end_bis = idxs_end[idxs]
-    idxs_0_bis = idxs_0[idxs]
-    if len(idxs_0_bis) == 0:
-        return None, None
-    else:
-        delta_p = Rot_10_Hz[idxs_0_bis].transpose(-1, -2).matmul((p_10_Hz[idxs_end_bis] - p_10_Hz[idxs_0_bis]).unsqueeze(-1)).squeeze()
-        distance = delta_p_gt.norm(dim=1).unsqueeze(-1)
-        iekf_pre_loss = delta_p.double() / distance.double()
-        gt_pre_loss = delta_p_gt.double() / distance.double()
-        return iekf_pre_loss.to(DEVICE), gt_pre_loss.to(DEVICE)
-
-
-@timming
-def rot_pose_to_se3(rot, pose):
-    """
-    Transform rotation matrix and position to SE3 matrix
-    :param rot: torch tensor or numpy array
-    :param pose: torch tensor or numpy array
-    :return:
-    """
-    se3 = []
-    if type(pose).__module__ == np.__name__:
-        pose = torch.tensor(pose)
-
-    for i in range(pose.shape[0]):
-        if type(rot[i]).__module__ == np.__name__:
-            r = torch.tensor(rot[i][0])
-        else:
-            r = rot[i]
-        M = torch.eye(4)
-        M[:3, :3] = r
-        M[:3, 3] = pose[i]
-        se3.append(M)
-    return se3
-
-
 # #### - Class - #### #
 class KittiDataset(Dataset):
     def __init__(self, hdf_path, split):
@@ -252,7 +196,7 @@ def make_trainning(model, EPOCHS):
     # #### - Train - #### #
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-8)
 
-    batch_bar = tqdm(total=train.len(), unit="batch", desc="Training", leave=False)
+    batch_bar = tqdm(total=BATCH_NUMBER, unit="batch", desc="Training", leave=False)
     epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
 
     train_loss_history = []
@@ -266,17 +210,16 @@ def make_trainning(model, EPOCHS):
         optimizer.zero_grad()
         batch_bar.reset()
         # print(f"  Training:")
-        for batch_index, drive in enumerate(train.seq_name()):
+        for i in range(1, BATCH_NUMBER+1):
             train_running_loss = torch.zeros(1)
             # print(f"    batch n°{batch_index + 1}: {drive}")
-            for i in range(1, BATCH_SIZE+1):
-                ground_truth = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/ground_truth")
+            for batch_index, drive in enumerate(train.seq_name()):
+                ground_truth = pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/ground_truth"))
                 pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
                 rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
-                # list_rpe = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/list_RPE")
-                inputs = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/input").to_numpy(), dtype=torch.float32)
-                t = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/time").to_numpy(), dtype=torch.float32)
-                init_cond = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/init_cond").values
+                inputs = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/input")).to_numpy(), dtype=torch.float32)
+                t = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/time")).to_numpy(), dtype=torch.float32)
+                init_cond = pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/init_cond")).values
 
                 inputs_net = inputs.to(DEVICE)
 
@@ -284,10 +227,7 @@ def make_trainning(model, EPOCHS):
                 z_cov = z_cov_net.cpu()                                 # Move the CNN result to 'cpu' for Kalman Filter iterations
                 inputs = inputs.cpu()
 
-                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[:3], init_cond[3:])  # Run the training Kalman Filter, result are already in torch.Tensor
-
-                # iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe)
-                # loss = criterion(iekf_p_loss, gt_p_loss)                # compute loss
+                Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[:3, 0], init_cond[3:, 0])  # Run the training Kalman Filter, result are already in torch.Tensor
 
                 loss = criterion((rot_mat_gt, pose_gt), (Rot, p))
 
@@ -297,7 +237,7 @@ def make_trainning(model, EPOCHS):
                 # else:
                 #     print(f"        sub-seq {i}: loss: Nan")
 
-            batch_bar.set_postfix(mean_batch_loss=train_running_loss.item()/BATCH_SIZE, lr=optimizer.param_groups[0]['lr'])
+            batch_bar.set_postfix(mean_batch_loss=train_running_loss.item()/(batch_index+1), lr=optimizer.param_groups[0]['lr'])
             batch_bar.update()
 
             train_running_loss.backward()                                   # Calculate gradients
@@ -317,7 +257,6 @@ def make_trainning(model, EPOCHS):
                     ground_truth = pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/ground_truth")
                     pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
                     rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
-                    # list_rpe = pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/list_RPE")
                     inputs = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/input").to_numpy(), dtype=torch.float32)
                     t = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/time").to_numpy(), dtype=torch.float32)
                     init_cond = pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/init_cond").values
@@ -330,9 +269,6 @@ def make_trainning(model, EPOCHS):
 
                     Rot, p = iekf.train_run(t, inputs, z_cov, init_cond[:3], init_cond[3:])  # Run the training Kalman Filter, result are already in torch.Tensor
 
-                    # iekf_p_loss, gt_p_loss = precompute_lost(Rot, p, list_rpe, N[0])
-
-                    # loss = criterion(iekf_p_loss, gt_p_loss)            # compute loss
                     loss = criterion((rot_mat_gt, pose_gt), (Rot, p))
 
                     val_running_loss += loss.item()
@@ -365,18 +301,17 @@ if __name__ == '__main__':
     parser.add_argument(
         "-e", "--epochs", type=int, required=True, help="Number of epochs to train the model. Ex: --epochs 400"
     )
+    parser.add_argument(
+        "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 32"
+    )
     # parser.add_argument(
     #     "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
-    # )
-    # parser.add_argument(
-    #     "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 32"
     # )
 
     args = parser.parse_args()
 
     save_path = "../data/processed/dataset.h5"                                  # Path to the .h5 dataset
     run_time = time.strftime('%Y%m%d_%H%M%S')
-    tensorboard_path = f"../runs/{run_time}"                                    # Path to the TensorBoard directory
 
     train = KittiDataset(save_path, 'train')
     validation = KittiDataset(save_path, 'validation')
@@ -384,29 +319,35 @@ if __name__ == '__main__':
     EPOCHS = args.epochs
     DEVICE = args.device
     SEQ_LEN = train.len_seq()  # args.seq
-    BATCH_SIZE = 8  # train.len_batch()  # args.batch
 
-    print(f"Epochs: {EPOCHS}; Device: {DEVICE}; Sequence length: {SEQ_LEN}")
+    if args.batch > train.len_batch():
+        cprint(f"Batch size argument too large: {args.batch}, but dataset batch size is {train.len_batch()}", "yellow")
+        BATCH_NUMBER = train.len_batch()
+        print(f"batch size used is: {BATCH_NUMBER}")
+    else:
+        BATCH_NUMBER = args.batch
+
+    print(f"Device: {DEVICE}; Epochs: {EPOCHS}; Batch size: {BATCH_NUMBER}; Sequence length: {SEQ_LEN}")
+
+    tensorboard_path = f"../runs/{run_time}_B{BATCH_NUMBER}_E{EPOCHS}"            # Path to the TensorBoard directory
+
+    # Model
+    model = CNN(SEQ_LEN).to(DEVICE)
+
+    # # test the model and fixe seed generation
+    # test_input = torch.rand((2000, 6)).to(DEVICE)
+    # prediction = model(test_input)
+    # print(prediction)
     # exit()
 
-    if True:
-        # Model
-        model = CNN(SEQ_LEN).to(DEVICE)
+    # Loss
+    # criterion = torch.nn.MSELoss().to(DEVICE)
+    criterion = RMSELoss().to(DEVICE)
 
-        # # test the model and fixe seed generation
-        # test_input = torch.rand((2000, 6)).to(DEVICE)
-        # prediction = model(test_input)
-        # print(prediction)
-        # exit()
+    train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
-        # Loss
-        # criterion = torch.nn.MSELoss().to(DEVICE)
-        criterion = RMSELoss().to(DEVICE)
-
-        train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
-
-        create_folder(f"../models/{run_time}")
-        torch.save(model, f"../models/{run_time}/CNN.pt")
+    create_folder(f"../models/{run_time[:-7]}")
+    torch.save(model, f"../models/{run_time[:-7]}/CNN_B{BATCH_NUMBER}_E{EPOCHS}.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
