@@ -66,28 +66,40 @@ def get_APE(ground_truth, kalman):
     return ape_metric
 
 
-def plot_APE(ground_truth, kalman, corr_edges=False):
+def plot_APE(ground_truth, kalman, cumulative=False, corr_edges=False):
+    """
+    Plot APE error and trajectory compare to a ground-truth one.
+    :param ground_truth: PosePath3D or tuple(rotation matrix, pose)
+    :param kalman: PosePath3D or tuple(rotation matrix, pose)
+    :param cumulative: Boolean
+    :param corr_edges: Boolean
+    :return:
+    """
     if type(ground_truth) == tuple:
         gt_pose3D = df_to_PosePath3D(ground_truth[0], ground_truth[1])
+        N = ground_truth[1].shape[0]
     elif type(ground_truth) == evo.core.trajectory.PosePath3D:
         gt_pose3D = ground_truth
+        N = ground_truth.num_poses
     else:
         raise TypeError("Bad type input, needs to be a tuple or evo.core.trajectory.PosePath3D")
 
-    if type(ground_truth) == tuple:
+    if type(kalman) == tuple:
         kf_pose3D = df_to_PosePath3D(kalman[0], kalman[1])
-    elif type(ground_truth) == evo.core.trajectory.PosePath3D:
+    elif type(kalman) == evo.core.trajectory.PosePath3D:
         kf_pose3D = kalman
     else:
         raise TypeError("Bad type input, needs to be a tuple or evo.core.trajectory.PosePath3D")
 
     ape_metric = get_APE(gt_pose3D, kf_pose3D)
     ape_stats = ape_metric.get_all_statistics()
+    second_from_start = np.linspace(0, N/100, N)
 
     fig = plt.figure()
-    plot.error_array(fig.gca(), ape_metric.error,  # x_array=second_from_start,
+    plot.error_array(fig.gca(), ape_metric.error, x_array=second_from_start, cumulative=cumulative,
                      statistics={s: v for s, v in ape_stats.items() if s != "sse"},
-                     name="APE", title="APE w.r.t " + ape_metric.pose_relation.value, xlabel="$t$ (s)")
+                     name="APE", xlabel="$t$ (s)",
+                     title=f"{'Cumulative ' if cumulative else ''}APE w.r.t {ape_metric.pose_relation.value}")
 
     plot_mode = plot.PlotMode.xy
     fig = plt.figure()
@@ -99,6 +111,40 @@ def plot_APE(ground_truth, kalman, corr_edges=False):
         cprint("NotImplementedError: PosePath3D object has no attribute 'num_poses'", 'red')
         # plot.draw_correspondence_edges(ax, kf_pose3D.reduce_to_ids([i for i in range(0, N, int(N/100))]),
         #                                gt_pose3D.reduce_to_ids([i for i in range(0, N, int(N/100))]), plot_mode)
+    ax.legend()
+    return
+
+
+def plot_multiple(ground_truth, kalmans):
+    """
+    Compare different trajectories on plot versus a ground-truth one.
+    :param ground_truth: PosePath3D or tuple(rotation matrix, pose)
+    :param kalmans: list[PosePath3D] or list[tuple(rotation matrix, pose)]
+    :return:
+    """
+    if type(ground_truth) == tuple:
+        gt_pose3D = df_to_PosePath3D(ground_truth[0], ground_truth[1])
+    elif type(ground_truth) == evo.core.trajectory.PosePath3D:
+        gt_pose3D = ground_truth
+    else:
+        raise TypeError("Bad type input, needs to be a tuple or evo.core.trajectory.PosePath3D")
+
+    kf_pose3D = []
+    kf_colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
+    for i in range(len(kalmans)):
+        if type(kalmans[i]) == tuple:
+            kf_pose3D.append(df_to_PosePath3D(kalmans[i][0], kalmans[i][1]))
+        elif type(kalmans[i]) == evo.core.trajectory.PosePath3D:
+            kf_pose3D.append(kalmans[i])
+        else:
+            raise TypeError("Bad type input, needs to be a tuple or evo.core.trajectory.PosePath3D")
+
+    plot_mode = plot.PlotMode.xy
+    fig = plt.figure()
+    ax = plot.prepare_axis(fig, plot_mode)
+    plot.traj(ax, plot_mode, gt_pose3D, '-', "black", "reference")
+    for k in range(len(kf_pose3D)):
+        plot.traj(ax, plot_mode, kf_pose3D[k], '--', kf_colors[k % len(kf_colors)], f"Kalman {k+1}")
     ax.legend()
     return
 
@@ -131,28 +177,40 @@ def get_RPE(ground_truth, kalman):
     return rpe_metric
 
 
-def plot_RPE(ground_truth, kalman, corr_edges=False):
+def plot_RPE(ground_truth, kalman, cumulative=False, corr_edges=False):
+    """
+    Plot APE error and trajectory compare to a ground-truth one.
+    :param ground_truth: PosePath3D or tuple(rotation matrix, pose)
+    :param kalman: PosePath3D or tuple(rotation matrix, pose)
+    :param cumulative: Boolean
+    :param corr_edges: Boolean
+    :return:
+    """
     if type(ground_truth) == tuple:
         gt_pose3D = df_to_PosePath3D(ground_truth[0], ground_truth[1])
+        N = ground_truth[1].shape[0]
     elif type(ground_truth) == evo.core.trajectory.PosePath3D:
         gt_pose3D = ground_truth
+        N = ground_truth.num_poses
     else:
         raise TypeError("Bad type input, needs to be a tuple or evo.core.trajectory.PosePath3D")
 
-    if type(ground_truth) == tuple:
+    if type(kalman) == tuple:
         kf_pose3D = df_to_PosePath3D(kalman[0], kalman[1])
-    elif type(ground_truth) == evo.core.trajectory.PosePath3D:
+    elif type(kalman) == evo.core.trajectory.PosePath3D:
         kf_pose3D = kalman
     else:
         raise TypeError("Bad type input, needs to be a tuple or evo.core.trajectory.PosePath3D")
 
     rpe_metric = get_RPE(gt_pose3D, kf_pose3D)
     rpe_stats = rpe_metric.get_all_statistics()
+    second_from_start = np.linspace(0, N/100, N)
 
     fig = plt.figure()
-    plot.error_array(fig.gca(), rpe_metric.error,  # x_array=second_from_start,
+    plot.error_array(fig.gca(), rpe_metric.error, x_array=second_from_start, cumulative=cumulative,
                      statistics={s: v for s, v in rpe_stats.items() if s != "sse"},
-                     name="APE", title="APE w.r.t " + rpe_metric.pose_relation.value, xlabel="$t$ (s)")
+                     name="APE", xlabel="$t$ (s)",
+                     title=f"{'Cumulative ' if cumulative else ''}RPE w.r.t {rpe_metric.pose_relation.value}")
 
     traj_ref_plot = copy.deepcopy(gt_pose3D)
     traj_est_plot = copy.deepcopy(kf_pose3D)
