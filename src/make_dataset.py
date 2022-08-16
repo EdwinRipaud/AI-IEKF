@@ -108,7 +108,7 @@ class BaseDataset:
 
         self.min_seq_len = minimum_sequence_length
         self.maximum_sample_loss = maximum_sample_loss
-        self.sequence_length = sequence_length
+        self.sequence_length = [sequence_length] if type(sequence_length) == int else list(sequence_length)
         self.batch_size = batch_size
         self.frequency = 100  # sampling frequency
 
@@ -179,17 +179,18 @@ class BaseDataset:
                     u_df = dataset[['wx', 'wy', 'wz', 'ax', 'ay', 'az']].copy()
                     gt_df = dataset[['rot_matrix', 'pose_x', 'pose_y', 'pose_z']].copy()
                     time_df = dataset[['time']].copy()
-                    for k in range(self.batch_size):                                                                    # generate 'BATCH_SIZE' random sub-sequences for training
-                        base_key = f"ETV_dataset/train/day_{date_dir2}/batch_{k+1}"
-                        N = 10 * self.rng.integers(low=0, high=(time_df.shape[0]-self.sequence_length)/10, size=1)[0]
-                        u_df.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/input")
-                        gt_df.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/ground_truth")
-                        time_df.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/time")
-                        init_cond_df.iloc[N, :].to_hdf(hdf_path, key=f"{base_key}/init_cond")
-                        p_gt = torch.tensor(dataset.iloc[N:N+self.sequence_length, :].loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
-                        ang_gt = torch.tensor(list(dataset.iloc[N:N+self.sequence_length, :]['rot_matrix'].values), dtype=torch.float32)
-                        list_RPE = pd.DataFrame(compute_delta_p(ang_gt, p_gt), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
-                        list_RPE.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/list_RPE")
+                    for seq_len in self.sequence_length:
+                        for k in range(self.batch_size):                                                                    # generate 'BATCH_SIZE' random sub-sequences for training
+                            base_key = f"ETV_dataset/seq_{seq_len}/train/day_{date_dir2}/batch_{k+1}"
+                            N = 10 * self.rng.integers(low=0, high=(time_df.shape[0]-seq_len)/10, size=1)[0]
+                            u_df.iloc[N:N+seq_len, :].to_hdf(hdf_path, key=f"{base_key}/input")
+                            gt_df.iloc[N:N+seq_len, :].to_hdf(hdf_path, key=f"{base_key}/ground_truth")
+                            time_df.iloc[N:N+seq_len, :].to_hdf(hdf_path, key=f"{base_key}/time")
+                            init_cond_df.iloc[N, :].to_hdf(hdf_path, key=f"{base_key}/init_cond")
+                            # p_gt = torch.tensor(dataset.iloc[N:N+seq_len, :].loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
+                            # ang_gt = torch.tensor(list(dataset.iloc[N:N+seq_len, :]['rot_matrix'].values), dtype=torch.float32)
+                            # list_RPE = pd.DataFrame(compute_delta_p(ang_gt, p_gt), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
+                            # list_RPE.iloc[N:N+self.sequence_length, :].to_hdf(hdf_path, key=f"{base_key}/list_RPE")
 
                 if date_dir2 in self.dataset_split['validation']:
                     base_key = f"ETV_dataset/validation/day_{date_dir2}"
@@ -287,10 +288,10 @@ class BaseDataset:
             Rot_gt.append(rot.as_matrix())  # Set initial car orientation
         dataset['rot_matrix'] = Rot_gt
 
-        p_gt = torch.tensor(dataset.loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
-        ang_gt = torch.tensor(list(dataset['rot_matrix'].values), dtype=torch.float32)
-        list_RPE = pd.DataFrame(compute_delta_p(ang_gt, p_gt), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
-        dataset.append(list_RPE, ignore_index=True)
+        # p_gt = torch.tensor(dataset.loc[:, ['pose_x', 'pose_y', 'pose_z']].to_numpy(), dtype=torch.float32)
+        # ang_gt = torch.tensor(list(dataset['rot_matrix'].values), dtype=torch.float32)
+        # list_RPE = pd.DataFrame(compute_delta_p(ang_gt, p_gt), index=['idx_0', 'idx_end', 'pose_delta_p']).transpose()
+        # dataset.append(list_RPE, ignore_index=True)
         return dataset.copy()
 
     def oxts_packets_2_dataframe(self, oxts_files):
@@ -352,7 +353,7 @@ if __name__ == '__main__':
     random.seed(random_seed)                                                                                            # Set the Python seed
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000")
+    parser.add_argument("-s", "--seq", type=int, nargs='+', required=True, help="Length sequence of data. Ex: --seq 2000 or --seq 1500 2000 2500")
     parser.add_argument("-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 32")
 
     args = parser.parse_args()
