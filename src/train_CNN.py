@@ -275,12 +275,12 @@ def make_trainning(model, EPOCHS):
             with torch.no_grad():
                 for batch_index, drive in enumerate(validation.seq_name()):
                     base_key_valid = f"ETV_dataset/validation/{drive}"
-                    ground_truth = pd.read_hdf(save_path, f"{base_key_valid}/ground_truth")
+                    ground_truth = pd.DataFrame(pd.read_hdf(save_path, f"{base_key_valid}/ground_truth"))
                     pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
                     rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
-                    inputs = torch.tensor(pd.read_hdf(save_path, f"{base_key_valid}/input").to_numpy(), dtype=torch.float32)
-                    t = torch.tensor(pd.read_hdf(save_path, f"{base_key_valid}/time").to_numpy(), dtype=torch.float32)
-                    init_cond = pd.read_hdf(save_path, f"{base_key_valid}/init_cond").values
+                    inputs = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"{base_key_valid}/input")).to_numpy(), dtype=torch.float32)
+                    t = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"{base_key_valid}/time")).to_numpy(), dtype=torch.float32)
+                    init_cond = pd.DataFrame(pd.read_hdf(save_path, f"{base_key_valid}/init_cond")).values
 
                     inputs_net = inputs.to(DEVICE)
 
@@ -296,6 +296,10 @@ def make_trainning(model, EPOCHS):
                 val_loss = val_running_loss / (batch_index+1)
                 val_loss_history.append(val_loss)
                 writer.add_scalar('validation/loss', val_loss, epoch)
+                if val_loss < min(val_loss_history):
+                    torch.save(model, f"../models/{run_time[:-7]}/CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.pt")
+                    global SAVE_MODEL_BOOL
+                    SAVE_MODEL_BOOL = True
                 # print(f"    Loss: {val_loss}")
 
         # print(f"")
@@ -350,6 +354,7 @@ if __name__ == '__main__':
 
     save_path = "../data/processed/dataset.h5"                                  # Path to the .h5 dataset
     run_time = time.strftime('%Y%m%d_%H%M%S')
+    create_folder(f"../models/{run_time[:-7]}")
 
     train = KittiDataset(save_path, 'train')
     validation = KittiDataset(save_path, 'validation')
@@ -368,6 +373,7 @@ if __name__ == '__main__':
     tensorboard_path = f"../runs/{run_time}_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}"            # Path to the TensorBoard directory
 
     # Model
+    SAVE_MODEL_BOOL = False
     model = CNN(SEQ_LEN).to(DEVICE)
 
     # # test the model and fixe seed generation
@@ -382,9 +388,18 @@ if __name__ == '__main__':
 
     train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
-    create_folder(f"../models/{run_time[:-7]}")
-    torch.save(model, f"../models/{run_time[:-7]}/CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.pt")
+    if not SAVE_MODEL_BOOL:
+        torch.save(model, f"../models/{run_time[:-7]}/CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
+
+    with open(f"../models/{run_time[:-7]}/parameters_CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.txt", "w") as f:
+        f.write(f"Epochs: \n{EPOCHS}\n\n")
+        f.write(f"Batch size:\n{BATCH_NUMBER}\n\n")
+        f.write(f"Sequence length:\n{SEQ_LEN}\n\n")
+        f.write(f"Execution time:\n{round(time.time()-start_time, 1)}\n\n")
+        f.write(f"Architecture:\n{model}\n\n")
+        f.write(f"Validation loss history:\n{val_loss_history}\n\n")
+        f.write(f"Best model save at epoch:\n{val_loss_history.index(min(val_loss_history))}\n\n")
 
     torch.cuda.empty_cache()
