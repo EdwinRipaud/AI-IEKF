@@ -62,24 +62,37 @@ class KittiDataset(Dataset):
         return {"init_cond": (v_mes0, ang0), "time": time_vec, "input": u, "ground_truth": (p_gt, ang_gt), "liste_RPE": list_rpe}
 
     def len(self):
-        return len(list(self.hdf.get(f"ETV_dataset/{self.split}")))
+        if self.split == "train":
+            return len(list(self.hdf.get(f"ETV_dataset/seq_{SEQ_LEN}/{self.split}")))
+        else:
+            return len(list(self.hdf.get(f"ETV_dataset/{self.split}")))
 
     def len_batch(self):
         if self.split == "train":
-            batch = self.hdf.get(f"ETV_dataset/{self.split}")
+            batch = self.hdf.get(f"ETV_dataset/seq_{SEQ_LEN}/{self.split}")
             return len(list(batch.get(list(batch.keys())[0])))
         else:
             return 1
 
     def len_seq(self):
-        batch = self.hdf.get(f"ETV_dataset/{self.split}")
-        seq = pd.read_hdf(self.hdf_path, f"ETV_dataset/{self.split}/{list(batch.keys())[0]}/batch_1/time")
-        return seq.shape[0]
+        if self.split == "train":
+            batch = self.hdf.get(f"ETV_dataset/seq_{SEQ_LEN}/{self.split}")
+            seq = pd.read_hdf(self.hdf_path, f"ETV_dataset/seq_{SEQ_LEN}/{self.split}/{list(batch.keys())[0]}/batch_1/time")
+            return seq.shape[0]
+        else:
+            batch = self.hdf.get(f"ETV_dataset/{self.split}")
+            seq = pd.read_hdf(self.hdf_path, f"ETV_dataset/{self.split}/{list(batch.keys())[0]}/time")
+            return seq.shape[0]
 
     def seq_name(self):
-        batch = self.hdf.get(f"ETV_dataset/{self.split}")
-        for name in list(batch.keys()):
-            yield name
+        if self.split == "train":
+            batch = self.hdf.get(f"ETV_dataset/seq_{SEQ_LEN}/{self.split}")
+            for name in list(batch.keys()):
+                yield name
+        else:
+            batch = self.hdf.get(f"ETV_dataset/{self.split}")
+            for name in list(batch.keys()):
+                yield name
 
     def __iter__(self):
         raise NotImplementedError
@@ -202,6 +215,7 @@ def make_trainning(model, EPOCHS):
     train_loss_history = []
     val_loss_history = []
 
+    batch_array = np.array([k for k in range(0, BATCH_NUMBER)]) % FULL_BATCH
     for epoch in range(EPOCHS):
         # print(f"Epoch n°{epoch+1}:")
         train_running_loss = torch.zeros(1)
@@ -210,16 +224,17 @@ def make_trainning(model, EPOCHS):
         optimizer.zero_grad()
         batch_bar.reset()
         # print(f"  Training:")
-        for i in range(1, BATCH_NUMBER+1):
+        for i in batch_array:
             train_running_loss = torch.zeros(1)
             # print(f"    batch n°{batch_index + 1}: {drive}")
             for batch_index, drive in enumerate(train.seq_name()):
-                ground_truth = pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/ground_truth"))
+                base_key_train = f"ETV_dataset/seq_{SEQ_LEN}/train/{drive}/batch_{i+1}"
+                ground_truth = pd.DataFrame(pd.read_hdf(save_path, f"{base_key_train}/ground_truth"))
                 pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
                 rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
-                inputs = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/input")).to_numpy(), dtype=torch.float32)
-                t = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/time")).to_numpy(), dtype=torch.float32)
-                init_cond = pd.DataFrame(pd.read_hdf(save_path, f"ETV_dataset/train/{drive}/batch_{i}/init_cond")).values
+                inputs = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"{base_key_train}/input")).to_numpy(), dtype=torch.float32)
+                t = torch.tensor(pd.DataFrame(pd.read_hdf(save_path, f"{base_key_train}/time")).to_numpy(), dtype=torch.float32)
+                init_cond = pd.DataFrame(pd.read_hdf(save_path, f"{base_key_train}/init_cond")).values
 
                 inputs_net = inputs.to(DEVICE)
 
@@ -247,6 +262,11 @@ def make_trainning(model, EPOCHS):
         train_loss_history.append(train_loss)
         writer.add_scalar('train/loss', train_loss, epoch)
 
+        if ROLL:
+            batch_array = (batch_array + BATCH_NUMBER) % FULL_BATCH
+        else:
+            batch_array = np.array([k for k in range(0, BATCH_NUMBER)]) % FULL_BATCH
+
         if True:
             # #### - Validation - #### #
             # print(f"  Validation:")
@@ -254,12 +274,13 @@ def make_trainning(model, EPOCHS):
             model.eval()
             with torch.no_grad():
                 for batch_index, drive in enumerate(validation.seq_name()):
-                    ground_truth = pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/ground_truth")
+                    base_key_valid = f"ETV_dataset/validation/{drive}"
+                    ground_truth = pd.read_hdf(save_path, f"{base_key_valid}/ground_truth")
                     pose_gt = ground_truth.loc[:, ['pose_x', 'pose_y', 'pose_z']].values
                     rot_mat_gt = ground_truth.loc[:, ['rot_matrix']].values
-                    inputs = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/input").to_numpy(), dtype=torch.float32)
-                    t = torch.tensor(pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/time").to_numpy(), dtype=torch.float32)
-                    init_cond = pd.read_hdf(save_path, f"ETV_dataset/validation/{drive}/init_cond").values
+                    inputs = torch.tensor(pd.read_hdf(save_path, f"{base_key_valid}/input").to_numpy(), dtype=torch.float32)
+                    t = torch.tensor(pd.read_hdf(save_path, f"{base_key_valid}/time").to_numpy(), dtype=torch.float32)
+                    init_cond = pd.read_hdf(save_path, f"{base_key_valid}/init_cond").values
 
                     inputs_net = inputs.to(DEVICE)
 
@@ -304,21 +325,34 @@ if __name__ == '__main__':
     parser.add_argument(
         "-b", "--batch", type=int, required=True, help="Batch size for training. Ex: --batch 32"
     )
-    # parser.add_argument(
-    #     "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
-    # )
+    parser.add_argument(
+        "-r", "--roll", type=str, required=True, help="Rolling through all data batch. Ex: --roll TRUE"
+    )
+    parser.add_argument(
+        "-s", "--seq", type=int, required=True, help="Length sequence of data. Ex: --seq 2000"
+    )
 
     args = parser.parse_args()
+
+    def t_or_f(arg):
+        ua = str(arg).upper()
+        if 'TRUE'.startswith(ua):
+            return True
+        elif 'FALSE'.startswith(ua):
+            return False
+        else:
+            pass
+
+    EPOCHS = args.epochs
+    DEVICE = args.device
+    SEQ_LEN = args.seq
+    ROLL = t_or_f(args.roll)
 
     save_path = "../data/processed/dataset.h5"                                  # Path to the .h5 dataset
     run_time = time.strftime('%Y%m%d_%H%M%S')
 
     train = KittiDataset(save_path, 'train')
     validation = KittiDataset(save_path, 'validation')
-
-    EPOCHS = args.epochs
-    DEVICE = args.device
-    SEQ_LEN = train.len_seq()  # args.seq
 
     if args.batch > train.len_batch():
         cprint(f"Batch size argument too large: {args.batch}, but dataset batch size is {train.len_batch()}", "yellow")
@@ -327,9 +361,11 @@ if __name__ == '__main__':
     else:
         BATCH_NUMBER = args.batch
 
+    FULL_BATCH = train.len_batch()
+
     print(f"Device: {DEVICE}; Epochs: {EPOCHS}; Batch size: {BATCH_NUMBER}; Sequence length: {SEQ_LEN}")
 
-    tensorboard_path = f"../runs/{run_time}_B{BATCH_NUMBER}_E{EPOCHS}"            # Path to the TensorBoard directory
+    tensorboard_path = f"../runs/{run_time}_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}"            # Path to the TensorBoard directory
 
     # Model
     model = CNN(SEQ_LEN).to(DEVICE)
@@ -347,7 +383,7 @@ if __name__ == '__main__':
     train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
     create_folder(f"../models/{run_time[:-7]}")
-    torch.save(model, f"../models/{run_time[:-7]}/CNN_B{BATCH_NUMBER}_E{EPOCHS}.pt")
+    torch.save(model, f"../models/{run_time[:-7]}/CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
