@@ -204,7 +204,7 @@ def plot_RPE(ground_truth, kalman, cumulative=False, corr_edges=False):
 
     rpe_metric = get_RPE(gt_pose3D, kf_pose3D)
     rpe_stats = rpe_metric.get_all_statistics()
-    second_from_start = np.linspace(0, N/100, N)
+    second_from_start = np.linspace(0, N/100, N)[::10][:len(rpe_metric.error)-1]
 
     fig = plt.figure()
     plot.error_array(fig.gca(), rpe_metric.error, x_array=second_from_start, cumulative=cumulative,

@@ -118,6 +118,8 @@ class IEKF:
         z_covs = torch.Tensor(z_covs).cpu() if type(z_covs).__module__ == np.__name__ else z_covs.cpu()
         v_mes0 = torch.Tensor(v_mes0).cpu() if type(v_mes0).__module__ == np.__name__ else v_mes0.cpu()
 
+        P_store = torch.zeros((t.shape[0], 21, 21))
+
         dt = t[1:] - t[:-1]                                                                                             # Set the delta time vector, that contain the delta of time for each sample
         N = u.shape[0]                                                                                                  # Sequence length
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(v_mes0, ang0, N)                                   # Initialise the states variables with initial condictions
@@ -129,6 +131,7 @@ class IEKF:
 
             Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = \
                 self.update(Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i, u[i], measurements_covs[i])
+            P_store[i, :, :] = P
             # correct numerical error every second
             if i % self.n_normalize_rot == 0:
                 Rot[i] = self.normalize_rot(Rot[i])
@@ -143,7 +146,8 @@ class IEKF:
         b_acc = b_acc.numpy() if type(b_acc).__module__ == torch.__name__ else b_acc
         Rot_c_i = Rot_c_i.numpy() if type(Rot_c_i).__module__ == torch.__name__ else Rot_c_i
         t_c_i = t_c_i.numpy() if type(t_c_i).__module__ == torch.__name__ else t_c_i
-        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
+        P_store = P_store.numpy() if type(P_store).__module__ == torch.__name__ else P_store
+        return {"rot": Rot, "v": v, "p": p, "b_omega": b_omega, "b_acc": b_acc, "Rot_c_i": Rot_c_i, "t_c_i": t_c_i, "P_store": P_store}
 
     def train_run(self, t, u, z_covs, v_mes0, ang0):
         """
@@ -377,6 +381,7 @@ if __name__ == '__main__':
         if not ("/axis" in name or "/block" in name or "/index" in name or "/value" in name):
             print(name)
     # print(hdf.visit(get_all))
+    # exit()
 
     # date = "day_2011_09_30_drive_0033_extract"
     date = "day_2011_09_30_drive_0018_extract"
@@ -396,26 +401,26 @@ if __name__ == '__main__':
 
     print(f"Initial conditions:\n\tvelocity: {v_mes0}\n\torientation: {ang0}")
 
-    Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[1., -0.5]], v_mes0, ang0)
+    kalman_1 = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[1., -0.5]], v_mes0, ang0)
 
     plt.figure()
     plt.plot(X_gt, Y_gt, 'k-')
-    plt.plot(p[:, 0], p[:, 1], 'g-.')
+    plt.plot(kalman_1['p'][:, 0], kalman_1['p'][:, 1], 'g-.')
     plt.axis('equal')
 
     import utils
     ground_t = utils.df_to_PosePath3D(dataset['rot_matrix'].values, dataset[['pose_x', 'pose_y', 'pose_z']].values)
-    kalman_t = utils.df_to_PosePath3D(Rot, p)
+    kalman_t = utils.df_to_PosePath3D(kalman_1['rot'], kalman_1['p'])
     print(utils.get_APE(ground_t, kalman_t).get_all_statistics())
     print(utils.torch_full_transformation_rmse(
         (dataset['rot_matrix'].values, dataset[['pose_x', 'pose_y', 'pose_z']].values),
-        (Rot, p)
+        (kalman_1['rot'], kalman_1['p'])
     ))
 
     utils.plot_APE(ground_t, kalman_t)
 
-    Rot2, _, p2, _, _, _, _ = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[0, 0]], v_mes0, ang0)
-    kalman2_t = utils.df_to_PosePath3D(Rot2, p2)
+    kalman_2 = iekf_filter.run(t, u, np.ones((t.shape[0], 1))@[[0, 0]], v_mes0, ang0)
+    kalman2_t = utils.df_to_PosePath3D(kalman_2['rot'], kalman_2['p'])
     print(utils.get_APE(ground_t, kalman2_t).get_all_statistics())
 
     utils.plot_multiple(ground_t, [kalman_t, kalman2_t])

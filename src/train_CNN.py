@@ -209,9 +209,9 @@ def make_trainning(model, EPOCHS):
     # #### - Train - #### #
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)  # , weight_decay=1e-8)
 
-    if not VERBOSE:
-        batch_bar = tqdm(total=BATCH_NUMBER, unit="batch", desc="Training", leave=False)
-        epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
+    # if not VERBOSE:
+    batch_bar = tqdm(total=BATCH_NUMBER, unit="batch", desc="Training", leave=False)
+    epoch_bar = tqdm(total=EPOCHS, unit="epoch", desc="Training")
 
     train_loss_history = []
     val_loss_history = []
@@ -230,7 +230,7 @@ def make_trainning(model, EPOCHS):
         for i in batch_array:
             train_running_loss = torch.zeros(1)
             if VERBOSE:
-                print(f"    batch n°{batch_index + 1}: {drive}")
+                print(f"    batch n°{i+1}")
             for batch_index, drive in enumerate(train.seq_name()):
                 base_key_train = f"ETV_dataset/seq_{SEQ_LEN}/train/{drive}/batch_{i+1}"
                 ground_truth = pd.DataFrame(pd.read_hdf(save_path, f"{base_key_train}/ground_truth"))
@@ -297,20 +297,20 @@ def make_trainning(model, EPOCHS):
 
                 val_running_loss += loss.item()
             val_loss = val_running_loss / (batch_index+1)
-            val_loss_history.append(val_loss)
             writer.add_scalar('validation/loss', val_loss, epoch)
-            if val_loss < min(val_loss_history):
-                torch.save(model, f"../models/{run_time[:-7]}/CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.pt")
-                global SAVE_MODEL_BOOL
-                SAVE_MODEL_BOOL = True
             if VERBOSE:
                 print(f"    Loss: {val_loss}")
+            if val_loss < min(val_loss_history):
+                torch.save(model.state_dict(), f"../models/{run_time[:-7]}/CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
+                global SAVE_MODEL_BOOL
+                SAVE_MODEL_BOOL = True
+            val_loss_history.append(val_loss)
 
         if epoch > 20:
             if val_loss >= val_loss_history[-10]:
-                with open(f"../models/{run_time[:-7]}/parameters_CNN_E{EPOCHS}_B{BATCH_NUMBER}_R{ROLL}_S{SEQ_LEN}.txt", "w") as f:
+                with open(f"../models/{run_time[:-7]}/parameters_CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.txt", "w") as f:
                     f.write(f"Epochs: \n{EPOCHS}\n\n")
-                    f.write(f"Batch size:\n{BATCH_NUMBER}\n\n")
+                    f.write(f"Batch size:\n{BATCH_NUMBER}; rolling: {ROLL}\n\n")
                     f.write(f"Sequence length:\n{SEQ_LEN}\n\n")
                     f.write(f"Execution time:\n{round(time.time()-start_time, 1)}\n\n")
                     f.write(f"Architecture:\n{model}\n\n")
@@ -340,7 +340,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-d", "--device", type=str, default='cuda0', help="Which GPU to use (cuda or cpu). Ex: --device 'cuda0'"
+        "-d", "--device", type=str, default='cuda', help="Which GPU to use (cuda or cpu). Ex: --device 'cuda0'"
     )
     parser.add_argument(
         "-e", "--epochs", type=int, default=100, help="Number of epochs to train the model. Ex: --epochs 400"
@@ -409,13 +409,13 @@ if __name__ == '__main__':
     train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
     if not SAVE_MODEL_BOOL:
-        torch.save(model, f"../models/{run_time[:-7]}/CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
+        torch.save(model.state_dict(), f"../models/{run_time[:-7]}/CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
     with open(f"../models/{run_time[:-7]}/parameters_CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.txt", "w") as f:
         f.write(f"Epochs: \n{EPOCHS}\n\n")
-        f.write(f"Batch size:\n{BATCH_NUMBER}\n\n")
+        f.write(f"Batch size:\n{BATCH_NUMBER}; rolling: {ROLL}\n\n")
         f.write(f"Learning rate:\n{LEARNING_RATE}\n\n")
         f.write(f"Sequence length:\n{SEQ_LEN}\n\n")
         f.write(f"Execution time:\n{round(time.time()-start_time, 1)}\n\n")
