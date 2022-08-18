@@ -5,6 +5,7 @@ from evo.core import metrics
 from termcolor import cprint
 from evo.tools import plot
 import numpy as np
+import random
 import torch
 import copy
 import time
@@ -280,6 +281,38 @@ def torch_full_transformation_rmse(gt_rot_p, kf_rot_p):
             E.append(error)
         squered_error = torch.pow(torch.tensor(E), 2)
         return torch.sqrt(torch.mean(squered_error)) + 1e-8
+
+
+def to_hms(seconds):
+    """
+    to_hms(seconds)
+
+    Transforms seconds to hours:minutes:seconds format.
+
+    **Arguments:**
+    - `seconds` : number in seconds that will be converted
+
+    **Returns:**
+    - `hms_format` : seconds converted to h:m:s format
+    """
+    hms_format = time.strftime("%Hh:%Mm:%Ss", time.gmtime(seconds))
+    return hms_format
+
+
+def get_random_color():
+    """
+    get_random_color()
+
+    Return a random color in HEX format.
+
+    **Arguments:**
+    - None
+
+    **Returns:**
+    - `rand_col` : random color in HEX format
+    """
+    rand_col = "#" + ''.join([random.choice('0123456789ABCDEF') for j in range(6)])
+    return rand_col
 
 
 # #### - Main - #### #
