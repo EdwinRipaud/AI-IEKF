@@ -161,7 +161,7 @@ class RMSELoss(torch.nn.Module):
 
 class CNN(torch.nn.Module):
     # @timming
-    def __init__(self, seq_length):
+    def __init__(self):
         super(CNN, self).__init__()
 
         self.conv_layers = torch.nn.Sequential(
@@ -179,7 +179,7 @@ class CNN(torch.nn.Module):
                             dilation=3),                            # Control spacing between the kernel points, c.f.: www.github.com/vdmoulin/conv_arithmetic
             torch.nn.ReplicationPad1d(4),                           # Pads the input tensor using replication of the input boundary
             torch.nn.ReLU(),                                        # Applies the rectified linear unit function element-wise: ReLU(x) = (x)+ = max(0, x)
-            torch.nn.Dropout(p=0.5),                                # Randomly zeroes some of th eelements of the input tensor with probability p, using samples from a Bernoulli distribution
+            torch.nn.Dropout(p=0.5),                                # Randomly zeroes some of the elements of the input tensor with probability p, using samples from a Bernoulli distribution
         )
         self.dense_layers = torch.nn.Sequential(
             # Fully connected part
@@ -191,6 +191,49 @@ class CNN(torch.nn.Module):
         # torch.nn.init.kaiming_normal_(self.layers[0].weight)
         # torch.nn.init.kaiming_normal_(self.layers[4].weight)
         # torch.nn.init.kaiming_normal_(self.layers[9].weight)
+
+    # @timming
+    def forward(self, x):
+        conv_in = x.t().unsqueeze(0)
+        conv_out = self.conv_layers(conv_in)
+        dense_in = conv_out.transpose(0, 2).squeeze()
+        out = self.dense_layers(dense_in)
+        return out
+
+
+class Nathan_CNN(torch.nn.Module):
+    """
+    CNN architecture based on Nathan LAOUÉ work: https://github.com/Naatyu/MagNav
+    """
+    # @timming
+    def __init__(self):
+        super(Nathan_CNN, self).__init__()
+
+        self.conv_layers = torch.nn.Sequential(
+            # Convolutional part
+            torch.nn.Conv1d(in_channels=6,
+                            out_channels=8,
+                            kernel_size=3,
+                            padding=1),
+            torch.nn.BatchNorm1d(8),
+            torch.nn.Conv1d(in_channels=8,
+                            out_channels=16,
+                            kernel_size=3,
+                            padding=1),
+            torch.nn.LeakyReLU(),
+        )
+        self.dense_layers = torch.nn.Sequential(
+            # Fully connected part
+            torch.nn.Flatten(),                                     # Flattens a contigous range of dims into a tensor
+            torch.nn.Linear(16, 8),                                 # Applies a linear transformation to the incoming data: y = xA.T + b
+            torch.nn.Linear(8, 2),                                 # Applies a linear transformation to the incoming data: y = xA.T + b
+            torch.nn.Tanh()                                         # Applies the Hyperbolic Tangent (Tanh) function element-wise: Tanh(x) = tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+        )
+
+        torch.nn.init.kaiming_normal_(self.conv_layers[0].weight, nonlinearity='relu')
+        torch.nn.init.constant_(self.conv_layers[0].bias, 0)
+        torch.nn.init.kaiming_normal_(self.conv_layers[2].weight, nonlinearity='relu')
+        torch.nn.init.constant_(self.conv_layers[2].bias, 0)
 
     # @timming
     def forward(self, x):
@@ -300,15 +343,16 @@ def make_trainning(model, EPOCHS):
             writer.add_scalar('validation/loss', val_loss, epoch)
             if VERBOSE:
                 print(f"    Loss: {val_loss}")
-            if val_loss < min(val_loss_history):
-                torch.save(model.state_dict(), f"../models/{run_time[:-7]}/CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
-                global SAVE_MODEL_BOOL
-                SAVE_MODEL_BOOL = True
+            if epoch > 1:
+                if val_loss < min(val_loss_history):
+                    torch.save(model.state_dict(), f"../models/{run_time[:-7]}/{RESEAU}_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
+                    global SAVE_MODEL_BOOL
+                    SAVE_MODEL_BOOL = True
             val_loss_history.append(val_loss)
 
         if epoch > 20:
-            if val_loss >= val_loss_history[-10]:
-                with open(f"../models/{run_time[:-7]}/parameters_CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.txt", "w") as f:
+            if val_loss >= val_loss_history[-15:]:
+                with open(f"../models/{run_time[:-7]}/parameters_{RESEAU}_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.txt", "w") as f:
                     f.write(f"Epochs: \n{EPOCHS}\n\n")
                     f.write(f"Batch size:\n{BATCH_NUMBER}; rolling: {ROLL}\n\n")
                     f.write(f"Sequence length:\n{SEQ_LEN}\n\n")
@@ -360,6 +404,9 @@ if __name__ == '__main__':
     parser.add_argument(
         "-v", "--verbose", type=str, default=False, help="Print all training metadata if true, else use 'tqdm' bar. Ex: --verbose true"
     )
+    parser.add_argument(
+        "-c", "--cnn", type=str, default="CNN", help="Choose CNN type. Ex: --cnn Nathan_CNN"
+    )
 
     args = parser.parse_args()
 
@@ -378,6 +425,7 @@ if __name__ == '__main__':
     LEARNING_RATE = float(str(args.lr))
     ROLL = t_or_f(args.roll)
     VERBOSE = t_or_f(args.verbose)
+    RESEAU = args.cnn
 
     save_path = "../data/processed/dataset.h5"                                  # Path to the .h5 dataset
     run_time = time.strftime('%Y%m%d_%H%M%S')
@@ -395,25 +443,34 @@ if __name__ == '__main__':
 
     FULL_BATCH = train.len_batch()
 
-    print(f"Device: {DEVICE}; Epochs: {EPOCHS}; Batch size: {args.batch}; Rolling batch: {ROLL}; Sequence length: {SEQ_LEN}; Learning rate: {LEARNING_RATE}")
+    print(f"Reseau: {RESEAU}, Device: {DEVICE}; Epochs: {EPOCHS}; Batch size: {args.batch}; Rolling batch: {ROLL}; Sequence length: {SEQ_LEN}; Learning rate: {LEARNING_RATE}")
     print("Verbose enable !" if VERBOSE else "Verbose disable !")
 
-    tensorboard_path = f"../runs/{run_time}_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}"            # Path to the TensorBoard directory
+    tensorboard_path = f"../runs/{run_time}_{RESEAU}_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}"            # Path to the TensorBoard directory
 
     # Model
     SAVE_MODEL_BOOL = False
-    model = CNN(SEQ_LEN).to(DEVICE)
+    if RESEAU == "Nathan_CNN":
+        model = Nathan_CNN().to(DEVICE)
+    else:
+        model = CNN().to(DEVICE)
+
+    # # test the model and fixe seed generation
+    # test_input = torch.rand((2000, 6)).to(DEVICE)
+    # prediction = model(test_input)
+    # print(prediction)
+    # exit()
 
     criterion = RMSELoss().to(DEVICE)
 
     train_loss_history, val_loss_history = make_trainning(model, EPOCHS)
 
     if not SAVE_MODEL_BOOL:
-        torch.save(model.state_dict(), f"../models/{run_time[:-7]}/CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
+        torch.save(model.state_dict(), f"../models/{run_time[:-7]}/{RESEAU}_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.pt")
 
     print(f"\n#####\nProgram run time: {round(time.time()-start_time, 1)} s\n#####")
 
-    with open(f"../models/{run_time[:-7]}/parameters_CNN_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.txt", "w") as f:
+    with open(f"../models/{run_time[:-7]}/parameters_{RESEAU}_S{SEQ_LEN}_B{BATCH_NUMBER}_LR{LEARNING_RATE}_E{EPOCHS}_R{ROLL}.txt", "w") as f:
         f.write(f"Epochs: \n{EPOCHS}\n\n")
         f.write(f"Batch size:\n{BATCH_NUMBER}; rolling: {ROLL}\n\n")
         f.write(f"Learning rate:\n{LEARNING_RATE}\n\n")
